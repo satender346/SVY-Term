@@ -1,0 +1,63 @@
+name: macOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Qt via aqt (no Homebrew)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install aqtinstall==3.1.18
+          python -m aqt install-qt mac desktop 6.6.3 clang_64 -O $HOME/qt
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/qt/6.6.3/macos" \
+            -DSVYTERM_ENABLE_LIBSSH=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Bundle Qt frameworks
+        run: |
+          "$HOME/qt/6.6.3/macos/bin/macdeployqt" build/SVY-Term.app -verbose=2
+
+      - name: Package app bundle
+        run: |
+          cd build
+          ditto -c -k --sequesterRsrc --keepParent SVY-Term.app SVY-Term-macOS.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVY-Term-macOS
+          path: build/SVY-Term-macOS.zip
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: build/SVY-Term-macOS.zip

@@ -1,0 +1,20 @@
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# macOS artifacts
+*.app
+*.dSYM/
+
+# Editor/system
+.DS_Store
+.vscode/
+.idea/
