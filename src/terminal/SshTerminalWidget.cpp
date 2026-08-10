@@ -40,6 +40,10 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
                .arg(m_profile.username, m_profile.host)
                .arg(m_profile.port));
 
+    const QString user = m_profile.username.trimmed().isEmpty() ? "user" : m_profile.username.trimmed();
+    const QString host = m_profile.host.trimmed().isEmpty() ? "host" : m_profile.host.trimmed();
+    m_promptPrefix = QString("%1@%2$ ").arg(user, host);
+
     if (m_client->connectSession(m_profile)) {
         append("Connected.");
         m_defaultFontSize = m_output->font().pointSize() > 0 ? m_output->font().pointSize() : 12;
@@ -145,7 +149,7 @@ void SshTerminalWidget::insertPrompt() {
     if (!all.isEmpty() && !all.endsWith('\n')) {
         append("\n");
     }
-    append("$ ");
+    append(m_promptPrefix);
     m_commandStart = m_output->toPlainText().size();
 }
 

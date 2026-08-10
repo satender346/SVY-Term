@@ -39,6 +39,9 @@ private slots:
     void onDeleteSelectedSession();
     void onOpenSftpForSelectedSession();
     void onRefreshSftpDirectory();
+    void onUploadToSftp();
+    void onDownloadFromSftp();
+    void onSftpItemActivated();
     void onBroadcastCommand();
     void onCreateTunnel();
     void onStopAllTunnels();
@@ -66,6 +69,7 @@ private:
     void applyFontDeltaToCurrentTab(int delta);
     void resetFontOnCurrentTab();
     void handleLocalSshCommand(const QString& command);
+    QString buildRemotePath(const QString& basePath, const QString& entryName) const;
 
     svy::core::SessionManager* m_sessionManager;
     QListWidget* m_sessionList;

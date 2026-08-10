@@ -198,6 +198,49 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
         m_current.password = effectivePassword;
         svy::protocols::CredentialCache::setPassword(profile.username, profile.host, profile.port, effectivePassword);
     }
+
+    m_shellChannel = ssh_channel_new(m_session);
+    if (m_shellChannel == nullptr) {
+        emit errorOccurred("Failed to create SSH shell channel");
+        ssh_disconnect(m_session);
+        ssh_free(m_session);
+        m_session = nullptr;
+        return false;
+    }
+
+    if (ssh_channel_open_session(m_shellChannel) != SSH_OK) {
+        emit errorOccurred(sshError(m_session, "Failed to open SSH shell channel"));
+        ssh_channel_free(m_shellChannel);
+        m_shellChannel = nullptr;
+        ssh_disconnect(m_session);
+        ssh_free(m_session);
+        m_session = nullptr;
+        return false;
+    }
+
+    if (ssh_channel_request_pty_size(m_shellChannel, "xterm-256color", 140, 40) != SSH_OK) {
+        emit errorOccurred(sshError(m_session, "Failed to request PTY"));
+        ssh_channel_close(m_shellChannel);
+        ssh_channel_free(m_shellChannel);
+        m_shellChannel = nullptr;
+        ssh_disconnect(m_session);
+        ssh_free(m_session);
+        m_session = nullptr;
+        return false;
+    }
+
+    if (ssh_channel_request_shell(m_shellChannel) != SSH_OK) {
+        emit errorOccurred(sshError(m_session, "Failed to start remote shell"));
+        ssh_channel_close(m_shellChannel);
+        ssh_channel_free(m_shellChannel);
+        m_shellChannel = nullptr;
+        ssh_disconnect(m_session);
+        ssh_free(m_session);
+        m_session = nullptr;
+        return false;
+    }
+
+    ssh_channel_set_blocking(m_shellChannel, 0);
     m_connected = true;
     emit outputReceived(QString("Connected to %1@%2:%3")
                             .arg(profile.username, profile.host)
@@ -216,15 +259,8 @@ bool SshClient::execute(const QString& command) {
         return false;
     }
 
-    ssh_channel channel = ssh_channel_new(m_session);
-    if (channel == nullptr) {
-        emit errorOccurred("Failed to create SSH channel");
-        return false;
-    }
-
-    if (ssh_channel_open_session(channel) != SSH_OK) {
-        emit errorOccurred(sshError(m_session, "Failed to open SSH channel"));
-        ssh_channel_free(channel);
+    if (m_shellChannel == nullptr) {
+        emit errorOccurred("SSH shell channel is not available");
         return false;
     }
 
@@ -246,8 +282,6 @@ bool SshClient::execute(const QString& command) {
                 &ok);
             if (!ok || sudoPassword.isEmpty()) {
                 emit errorOccurred("Sudo command cancelled: password required");
-                ssh_channel_close(channel);
-                ssh_channel_free(channel);
                 return false;
             }
             svy::protocols::CredentialCache::setPassword(
@@ -258,11 +292,9 @@ bool SshClient::execute(const QString& command) {
         effectiveCommand = buildSudoCommandWithPassword(command, sudoPassword);
     }
 
-    const QByteArray cmd = effectiveCommand.toUtf8();
-    if (ssh_channel_request_exec(channel, cmd.constData()) != SSH_OK) {
-        emit errorOccurred(sshError(m_session, "Failed to execute remote command"));
-        ssh_channel_close(channel);
-        ssh_channel_free(channel);
+    const QByteArray cmd = (effectiveCommand + "\n").toUtf8();
+    if (ssh_channel_write(m_shellChannel, cmd.constData(), static_cast<uint32_t>(cmd.size())) == SSH_ERROR) {
+        emit errorOccurred(sshError(m_session, "Failed to write to SSH shell"));
         return false;
     }
 
@@ -270,26 +302,38 @@ bool SshClient::execute(const QString& command) {
     QByteArray stderrData;
     char buffer[4096];
 
-    while (!ssh_channel_is_eof(channel)) {
-        int nread = ssh_channel_read_timeout(channel, buffer, sizeof(buffer), 0, 200);
+    int idleLoops = 0;
+    const int maxIdleLoops = 8;
+    while (idleLoops < maxIdleLoops && !ssh_channel_is_eof(m_shellChannel)) {
+        bool gotData = false;
+
+        int nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 0);
         if (nread == SSH_ERROR) {
             emit errorOccurred(sshError(m_session, "Error reading SSH stdout"));
             break;
         }
         if (nread > 0) {
             stdoutData.append(buffer, nread);
+            gotData = true;
         }
 
-        nread = ssh_channel_read_timeout(channel, buffer, sizeof(buffer), 1, 50);
+        nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 1);
         if (nread == SSH_ERROR) {
             emit errorOccurred(sshError(m_session, "Error reading SSH stderr"));
             break;
         }
         if (nread > 0) {
             stderrData.append(buffer, nread);
+            gotData = true;
         }
 
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        if (gotData) {
+            idleLoops = 0;
+        } else {
+            ++idleLoops;
+        }
+
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     }
 
     if (!stdoutData.isEmpty()) {
@@ -299,9 +343,6 @@ bool SshClient::execute(const QString& command) {
         emit outputReceived(QString::fromUtf8(stderrData));
     }
 
-    ssh_channel_send_eof(channel);
-    ssh_channel_close(channel);
-    ssh_channel_free(channel);
     return true;
 #endif
 }
@@ -311,6 +352,12 @@ void SshClient::disconnectSession() {
         emit outputReceived(QString("Disconnected from %1").arg(m_current.host));
     }
 #if SVYTERM_HAS_LIBSSH
+    if (m_shellChannel != nullptr) {
+        ssh_channel_send_eof(m_shellChannel);
+        ssh_channel_close(m_shellChannel);
+        ssh_channel_free(m_shellChannel);
+        m_shellChannel = nullptr;
+    }
     if (m_session != nullptr) {
         ssh_disconnect(m_session);
         ssh_free(m_session);

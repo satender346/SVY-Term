@@ -4,6 +4,8 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDockWidget>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
@@ -57,9 +59,13 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     auto* sftpLayout = new QVBoxLayout(sftpContainer);
     auto* sftpTop = new QHBoxLayout();
     auto* refreshButton = new QPushButton("Refresh", sftpContainer);
+    auto* uploadButton = new QPushButton("Upload", sftpContainer);
+    auto* downloadButton = new QPushButton("Download", sftpContainer);
     m_sftpPath->setPlaceholderText("Remote path (example: . or /home/user)");
     m_sftpPath->setText(".");
     sftpTop->addWidget(m_sftpPath);
+    sftpTop->addWidget(uploadButton);
+    sftpTop->addWidget(downloadButton);
     sftpTop->addWidget(refreshButton);
     sftpLayout->addLayout(sftpTop);
     sftpLayout->addWidget(m_sftpList);
@@ -86,7 +92,10 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
         onOpenSelectedSession();
     });
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshSftpDirectory);
+    connect(uploadButton, &QPushButton::clicked, this, &MainWindow::onUploadToSftp);
+    connect(downloadButton, &QPushButton::clicked, this, &MainWindow::onDownloadFromSftp);
     connect(m_sftpPath, &QLineEdit::returnPressed, this, &MainWindow::onRefreshSftpDirectory);
+    connect(m_sftpList, &QListWidget::itemDoubleClicked, this, [this]() { onSftpItemActivated(); });
     connect(m_sftpClient, &svy::protocols::SftpClient::info, this, [this](const QString& message) {
         statusBar()->showMessage(message, 4000);
     });
@@ -222,6 +231,12 @@ void MainWindow::onOpenSftpForSelectedSession() {
 }
 
 void MainWindow::onRefreshSftpDirectory() {
+    if (!m_sftpClient->isConnected()) {
+        m_sftpList->clear();
+        m_sftpList->addItem("[not connected]");
+        return;
+    }
+
     const QString path = m_sftpPath->text().trimmed().isEmpty() ? "." : m_sftpPath->text().trimmed();
     const auto entries = m_sftpClient->listDirectory(path);
 
@@ -233,6 +248,85 @@ void MainWindow::onRefreshSftpDirectory() {
     if (entries.isEmpty()) {
         m_sftpList->addItem("[empty or unavailable]");
     }
+}
+
+void MainWindow::onUploadToSftp() {
+    if (!m_sftpClient->isConnected()) {
+        QMessageBox::information(this, "SFTP", "Connect an SSH/SFTP session first.");
+        return;
+    }
+
+    const QString localFile = QFileDialog::getOpenFileName(this, "Select file to upload");
+    if (localFile.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo localInfo(localFile);
+    const QString basePath = m_sftpPath->text().trimmed().isEmpty() ? "." : m_sftpPath->text().trimmed();
+    const QString suggestedRemote = buildRemotePath(basePath, localInfo.fileName());
+
+    bool ok = false;
+    const QString remoteFile = QInputDialog::getText(
+        this,
+        "Upload to SFTP",
+        "Remote destination path",
+        QLineEdit::Normal,
+        suggestedRemote,
+        &ok);
+    if (!ok || remoteFile.trimmed().isEmpty()) {
+        return;
+    }
+
+    if (m_sftpClient->upload(localFile, remoteFile.trimmed())) {
+        onRefreshSftpDirectory();
+    }
+}
+
+void MainWindow::onDownloadFromSftp() {
+    if (!m_sftpClient->isConnected()) {
+        QMessageBox::information(this, "SFTP", "Connect an SSH/SFTP session first.");
+        return;
+    }
+
+    const auto selected = m_sftpList->selectedItems();
+    if (selected.isEmpty()) {
+        QMessageBox::information(this, "SFTP", "Select a remote file entry first.");
+        return;
+    }
+
+    QString entryName = selected.first()->text().trimmed();
+    if (entryName.endsWith('/')) {
+        QMessageBox::information(this, "SFTP", "Selected entry is a directory. Open it first, then select a file.");
+        return;
+    }
+
+    const QString basePath = m_sftpPath->text().trimmed().isEmpty() ? "." : m_sftpPath->text().trimmed();
+    const QString remoteFile = buildRemotePath(basePath, entryName);
+
+    const QString localFile = QFileDialog::getSaveFileName(this, "Save downloaded file as", entryName);
+    if (localFile.isEmpty()) {
+        return;
+    }
+
+    m_sftpClient->download(remoteFile, localFile);
+}
+
+void MainWindow::onSftpItemActivated() {
+    const auto selected = m_sftpList->selectedItems();
+    if (selected.isEmpty()) {
+        return;
+    }
+
+    QString entry = selected.first()->text().trimmed();
+    if (!entry.endsWith('/')) {
+        return;
+    }
+
+    entry.chop(1);
+    const QString basePath = m_sftpPath->text().trimmed().isEmpty() ? "." : m_sftpPath->text().trimmed();
+    const QString nextPath = buildRemotePath(basePath, entry);
+    m_sftpPath->setText(nextPath);
+    onRefreshSftpDirectory();
 }
 
 void MainWindow::onSessionsChanged() {
@@ -734,6 +828,22 @@ void MainWindow::handleLocalSshCommand(const QString& command) {
 
     createSshTab(quick);
     statusBar()->showMessage("Opened internal SSH tab for interactive login.", 5000);
+}
+
+QString MainWindow::buildRemotePath(const QString& basePath, const QString& entryName) const {
+    QString base = basePath.trimmed();
+    QString entry = entryName.trimmed();
+
+    if (base.isEmpty()) {
+        base = ".";
+    }
+    if (entry.startsWith('/')) {
+        return entry;
+    }
+    if (base.endsWith('/')) {
+        return base + entry;
+    }
+    return base + "/" + entry;
 }
 
 void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {

@@ -5,6 +5,7 @@
 
 #if SVYTERM_HAS_LIBSSH
 #include <libssh/libssh.h>
+#include <libssh/callbacks.h>
 #endif
 
 #include "core/SessionTypes.h"
@@ -32,6 +33,7 @@ private:
     svy::core::SessionProfile m_current;
 #if SVYTERM_HAS_LIBSSH
     ssh_session m_session = nullptr;
+    ssh_channel m_shellChannel = nullptr;
 #endif
 };
 

@@ -207,6 +207,10 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
 #endif
 }
 
+bool SftpClient::isConnected() const {
+    return m_connected;
+}
+
 QStringList SftpClient::listDirectory(const QString& path) const {
     if (!m_connected) {
         return {};
@@ -233,8 +237,11 @@ QStringList SftpClient::listDirectory(const QString& path) const {
             break;
         }
 
-        const QString name = QString::fromUtf8(attrs->name ? attrs->name : "");
+        QString name = QString::fromUtf8(attrs->name ? attrs->name : "");
         if (name != "." && name != "..") {
+            if (attrs->type == SSH_FILEXFER_TYPE_DIRECTORY) {
+                name += "/";
+            }
             entries.push_back(name);
         }
         sftp_attributes_free(attrs);

@@ -20,6 +20,7 @@ public:
     ~SftpClient() override;
 
     bool connectSession(const svy::core::SessionProfile& profile);
+    bool isConnected() const;
     QStringList listDirectory(const QString& path) const;
     bool upload(const QString& localPath, const QString& remotePath);
     bool download(const QString& remotePath, const QString& localPath);
