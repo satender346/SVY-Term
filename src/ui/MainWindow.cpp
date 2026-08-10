@@ -8,16 +8,20 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QPushButton>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <QUuid>
+
 #include "core/SessionTypes.h"
 #include "protocols/SftpClient.h"
 #include "terminal/SshTerminalWidget.h"
 #include "terminal/TerminalWidget.h"
+#include "tunnels/TunnelManager.h"
 #include "ui/SessionDialog.h"
 
 namespace svy::ui {
@@ -26,10 +30,11 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     : QMainWindow(parent),
       m_sessionManager(sessionManager),
       m_sessionList(new QListWidget(this)),
-    m_tabs(new QTabWidget(this)),
-    m_sftpClient(new svy::protocols::SftpClient(this)),
-    m_sftpList(new QListWidget(this)),
-    m_sftpPath(new QLineEdit(this)) {
+            m_tabs(new QTabWidget(this)),
+            m_sftpClient(new svy::protocols::SftpClient(this)),
+            m_tunnelManager(new svy::tunnels::TunnelManager(this)),
+            m_sftpList(new QListWidget(this)),
+            m_sftpPath(new QLineEdit(this)) {
     setWindowTitle("SVY-Term");
     resize(1280, 820);
 
@@ -76,6 +81,12 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     connect(m_sftpClient, &svy::protocols::SftpClient::errorOccurred, this, [this](const QString& message) {
         QMessageBox::warning(this, "SFTP", message);
     });
+    connect(m_tunnelManager, &svy::tunnels::TunnelManager::tunnelStarted,
+            this, [this](const svy::tunnels::TunnelProfile& t) {
+                statusBar()->showMessage(QString("Tunnel started: %1").arg(t.name), 5000);
+            });
+    connect(m_tunnelManager, &svy::tunnels::TunnelManager::errorOccurred,
+            this, [this](const QString& m) { QMessageBox::warning(this, "Tunnel", m); });
 
     buildMenu();
     refreshSessionList();
@@ -243,13 +254,98 @@ void MainWindow::buildMenu() {
     sessionsMenu->addSeparator();
     QAction* openSftp = sessionsMenu->addAction("Open SFTP Browser (Selected SSH)");
 
+    QMenu* toolsMenu = menuBar()->addMenu("Tools");
+    QAction* broadcast = toolsMenu->addAction("Multi-exec: Broadcast command");
+    toolsMenu->addSeparator();
+    QAction* createTunnel = toolsMenu->addAction("Start SSH tunnel (port forwarding)");
+    QAction* stopTunnels = toolsMenu->addAction("Stop all tunnels");
+
     connect(newLocal, &QAction::triggered, this, &MainWindow::onAddLocalSession);
     connect(newSsh, &QAction::triggered, this, &MainWindow::onAddSshSession);
     connect(openSelected, &QAction::triggered, this, &MainWindow::onOpenSelectedSession);
     connect(editSelected, &QAction::triggered, this, &MainWindow::onEditSelectedSession);
     connect(deleteSelected, &QAction::triggered, this, &MainWindow::onDeleteSelectedSession);
     connect(openSftp, &QAction::triggered, this, &MainWindow::onOpenSftpForSelectedSession);
+    connect(broadcast, &QAction::triggered, this, &MainWindow::onBroadcastCommand);
+    connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
+    connect(stopTunnels, &QAction::triggered, this, &MainWindow::onStopAllTunnels);
     connect(quit, &QAction::triggered, this, &MainWindow::close);
+}
+
+void MainWindow::onBroadcastCommand() {
+    bool ok = false;
+    const QString command = QInputDialog::getText(
+        this,
+        "Multi-exec",
+        "Command to execute in all open local/SSH tabs:",
+        QLineEdit::Normal,
+        QString(),
+        &ok);
+    if (!ok || command.trimmed().isEmpty()) {
+        return;
+    }
+
+    int count = 0;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        QWidget* tab = m_tabs->widget(i);
+        if (auto* local = qobject_cast<svy::terminal::TerminalWidget*>(tab)) {
+            local->runCommand(command);
+            ++count;
+        } else if (auto* ssh = qobject_cast<svy::terminal::SshTerminalWidget*>(tab)) {
+            ssh->runCommand(command);
+            ++count;
+        }
+    }
+
+    statusBar()->showMessage(QString("Broadcast to %1 tab(s)").arg(count), 4000);
+}
+
+void MainWindow::onCreateTunnel() {
+    bool ok = false;
+    const QString gatewayHost = QInputDialog::getText(this, "Tunnel", "Gateway host", QLineEdit::Normal, QString(), &ok);
+    if (!ok || gatewayHost.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QString gatewayUser = QInputDialog::getText(this, "Tunnel", "Gateway username", QLineEdit::Normal, QString(), &ok);
+    if (!ok || gatewayUser.trimmed().isEmpty()) {
+        return;
+    }
+
+    const int localPort = QInputDialog::getInt(this, "Tunnel", "Local port", 8080, 1, 65535, 1, &ok);
+    if (!ok) {
+        return;
+    }
+
+    const QString remoteHost = QInputDialog::getText(this, "Tunnel", "Remote host", QLineEdit::Normal, QString(), &ok);
+    if (!ok || remoteHost.trimmed().isEmpty()) {
+        return;
+    }
+
+    const int remotePort = QInputDialog::getInt(this, "Tunnel", "Remote port", 22, 1, 65535, 1, &ok);
+    if (!ok) {
+        return;
+    }
+
+    svy::tunnels::TunnelProfile t;
+    t.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    t.name = QString("%1:%2 -> %3:%4").arg(t.localHost).arg(localPort).arg(remoteHost).arg(remotePort);
+    t.gatewayHost = gatewayHost.trimmed();
+    t.gatewayUser = gatewayUser.trimmed();
+    t.gatewayPort = 22;
+    t.localPort = localPort;
+    t.remoteHost = remoteHost.trimmed();
+    t.remotePort = remotePort;
+
+    m_tunnelManager->startTunnel(t);
+}
+
+void MainWindow::onStopAllTunnels() {
+    const auto active = m_tunnelManager->activeTunnels();
+    for (const auto& t : active) {
+        m_tunnelManager->stopTunnel(t.id);
+    }
+    statusBar()->showMessage("Stopped all tunnels", 4000);
 }
 
 svy::core::SessionProfile MainWindow::currentSelectedSession() const {

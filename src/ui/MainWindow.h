@@ -17,6 +17,10 @@ namespace svy::protocols {
 class SftpClient;
 }
 
+namespace svy::tunnels {
+class TunnelManager;
+}
+
 namespace svy::ui {
 
 class MainWindow : public QMainWindow {
@@ -35,6 +39,9 @@ private slots:
     void onDeleteSelectedSession();
     void onOpenSftpForSelectedSession();
     void onRefreshSftpDirectory();
+    void onBroadcastCommand();
+    void onCreateTunnel();
+    void onStopAllTunnels();
     void onSessionsChanged();
     void onOpenSelectedSession();
 
@@ -47,6 +54,7 @@ private:
     QListWidget* m_sessionList;
     QTabWidget* m_tabs;
     svy::protocols::SftpClient* m_sftpClient;
+    svy::tunnels::TunnelManager* m_tunnelManager;
     QListWidget* m_sftpList;
     QLineEdit* m_sftpPath;
 };

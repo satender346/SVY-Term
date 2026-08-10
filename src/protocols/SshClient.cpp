@@ -1,6 +1,8 @@
 #include "protocols/SshClient.h"
 
 #include <QByteArray>
+#include <QInputDialog>
+#include <QLineEdit>
 
 #if SVYTERM_HAS_LIBSSH
 namespace {
@@ -77,13 +79,29 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
         return false;
     }
 
-    const int authResult = ssh_userauth_publickey_auto(m_session, nullptr, nullptr);
+    int authResult = ssh_userauth_publickey_auto(m_session, nullptr, nullptr);
     if (authResult != SSH_AUTH_SUCCESS) {
-        emit errorOccurred(sshError(m_session, "SSH authentication failed"));
-        ssh_disconnect(m_session);
-        ssh_free(m_session);
-        m_session = nullptr;
-        return false;
+        bool ok = false;
+        const QString password = QInputDialog::getText(
+            nullptr,
+            "SSH Password",
+            QString("Password for %1@%2").arg(profile.username, profile.host),
+            QLineEdit::Password,
+            QString(),
+            &ok);
+
+        if (ok && !password.isEmpty()) {
+            const QByteArray pass = password.toUtf8();
+            authResult = ssh_userauth_password(m_session, nullptr, pass.constData());
+        }
+
+        if (authResult != SSH_AUTH_SUCCESS) {
+            emit errorOccurred(sshError(m_session, "SSH authentication failed"));
+            ssh_disconnect(m_session);
+            ssh_free(m_session);
+            m_session = nullptr;
+            return false;
+        }
     }
 
     m_current = profile;

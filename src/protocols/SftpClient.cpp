@@ -2,6 +2,8 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QInputDialog>
+#include <QLineEdit>
 
 #if SVYTERM_HAS_LIBSSH
 #include <fcntl.h>
@@ -74,12 +76,29 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
         return false;
     }
 
-    if (ssh_userauth_publickey_auto(m_sshSession, nullptr, nullptr) != SSH_AUTH_SUCCESS) {
-        emit errorOccurred(sshError(m_sshSession, "SFTP authentication failed"));
-        ssh_disconnect(m_sshSession);
-        ssh_free(m_sshSession);
-        m_sshSession = nullptr;
-        return false;
+    int authResult = ssh_userauth_publickey_auto(m_sshSession, nullptr, nullptr);
+    if (authResult != SSH_AUTH_SUCCESS) {
+        bool ok = false;
+        const QString password = QInputDialog::getText(
+            nullptr,
+            "SFTP Password",
+            QString("Password for %1@%2").arg(profile.username, profile.host),
+            QLineEdit::Password,
+            QString(),
+            &ok);
+
+        if (ok && !password.isEmpty()) {
+            const QByteArray pass = password.toUtf8();
+            authResult = ssh_userauth_password(m_sshSession, nullptr, pass.constData());
+        }
+
+        if (authResult != SSH_AUTH_SUCCESS) {
+            emit errorOccurred(sshError(m_sshSession, "SFTP authentication failed"));
+            ssh_disconnect(m_sshSession);
+            ssh_free(m_sshSession);
+            m_sshSession = nullptr;
+            return false;
+        }
     }
 
     m_sftpSession = sftp_new(m_sshSession);

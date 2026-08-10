@@ -15,6 +15,7 @@ public:
     explicit TerminalWidget(QWidget* parent = nullptr);
 
     void runCommand(const QString& command);
+    bool isBusy() const;
 
 signals:
     void titleSuggested(const QString& title);

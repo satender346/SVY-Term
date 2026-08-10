@@ -1,8 +1,12 @@
 #pragma once
 
 #include <QObject>
+#include <QHash>
+#include <QPointer>
 #include <QString>
 #include <QVector>
+
+class QProcess;
 
 namespace svy::tunnels {
 
@@ -10,11 +14,13 @@ struct TunnelProfile {
     QString id;
     QString name;
     QString gatewayHost;
+    QString gatewayUser;
     int gatewayPort = 22;
     QString localHost = "127.0.0.1";
     int localPort = 0;
     QString remoteHost;
     int remotePort = 0;
+    QString privateKeyPath;
 };
 
 class TunnelManager : public QObject {
@@ -34,6 +40,7 @@ signals:
 
 private:
     QVector<TunnelProfile> m_active;
+    QHash<QString, QPointer<QProcess>> m_processes;
 };
 
 } // namespace svy::tunnels

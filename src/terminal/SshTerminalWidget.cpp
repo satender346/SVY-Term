@@ -39,15 +39,19 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
     }
 }
 
-void SshTerminalWidget::onEnterPressed() {
-    const QString command = m_input->text().trimmed();
-    if (command.isEmpty()) {
+void SshTerminalWidget::runCommand(const QString& command) {
+    const QString trimmed = command.trimmed();
+    if (trimmed.isEmpty()) {
         return;
     }
+    append(QString("$ %1").arg(trimmed));
+    m_client->execute(trimmed);
+}
 
+void SshTerminalWidget::onEnterPressed() {
+    const QString command = m_input->text();
     m_input->clear();
-    append(QString("$ %1").arg(command));
-    m_client->execute(command);
+    runCommand(command);
 }
 
 void SshTerminalWidget::onOutputReceived(const QString& output) {

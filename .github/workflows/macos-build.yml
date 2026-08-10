@@ -22,15 +22,16 @@ jobs:
       - name: Install Qt on runner
         run: |
           brew update
-          brew install qt
+          brew install qt libssh
 
       - name: Configure
         run: |
           QT_PREFIX="$(brew --prefix qt)"
+          export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:${PKG_CONFIG_PATH}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
-            -DSVYTERM_ENABLE_LIBSSH=OFF
+            -DSVYTERM_ENABLE_LIBSSH=ON
 
       - name: Build
         run: cmake --build build -j

@@ -1,6 +1,5 @@
 #include "terminal/TerminalWidget.h"
 
-#include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
@@ -28,19 +27,27 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     connect(m_process, &QProcess::readyReadStandardError, this, &TerminalWidget::onReadyReadStderr);
     connect(m_process, &QProcess::stateChanged, this, &TerminalWidget::onProcessStateChanged);
 
-    m_process->setProgram("/bin/zsh");
-    m_process->setArguments({"-i"});
-    m_process->start();
+    appendOutput("[ready]");
 }
 
 void TerminalWidget::runCommand(const QString& command) {
-    if (command.trimmed().isEmpty() || m_process->state() != QProcess::Running) {
+    if (command.trimmed().isEmpty()) {
+        return;
+    }
+
+    if (m_process->state() != QProcess::NotRunning) {
+        appendOutput("[busy] previous command still running");
         return;
     }
 
     appendOutput(QString("$ %1").arg(command));
-    m_process->write(command.toUtf8());
-    m_process->write("\n");
+    m_process->setProgram("/bin/zsh");
+    m_process->setArguments({"-lc", command});
+    m_process->start();
+}
+
+bool TerminalWidget::isBusy() const {
+    return m_process->state() != QProcess::NotRunning;
 }
 
 void TerminalWidget::onEnterPressed() {
@@ -60,13 +67,12 @@ void TerminalWidget::onReadyReadStderr() {
 void TerminalWidget::onProcessStateChanged(QProcess::ProcessState state) {
     switch (state) {
     case QProcess::NotRunning:
-        appendOutput("[terminal exited]");
+        appendOutput("[done]");
         break;
     case QProcess::Starting:
-        appendOutput("[starting shell]");
+        appendOutput("[running]");
         break;
     case QProcess::Running:
-        appendOutput("[shell running]");
         break;
     }
 }

@@ -18,6 +18,7 @@ class SshTerminalWidget : public QWidget {
 
 public:
     explicit SshTerminalWidget(const svy::core::SessionProfile& profile, QWidget* parent = nullptr);
+    void runCommand(const QString& command);
 
 private slots:
     void onEnterPressed();
