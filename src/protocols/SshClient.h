@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QString>
 
+class QTimer;
+
 #if SVYTERM_HAS_LIBSSH
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
@@ -29,11 +31,16 @@ signals:
     void errorOccurred(const QString& message);
 
 private:
+#if SVYTERM_HAS_LIBSSH
+    void pollShellOutput();
+#endif
+
     bool m_connected = false;
     svy::core::SessionProfile m_current;
 #if SVYTERM_HAS_LIBSSH
     ssh_session m_session = nullptr;
     ssh_channel m_shellChannel = nullptr;
+    QTimer* m_pollTimer = nullptr;
 #endif
 };
 

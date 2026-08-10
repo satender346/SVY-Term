@@ -128,13 +128,6 @@ void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine)
         return;
     }
 
-    if (isInteractiveShellCommand(trimmed)) {
-        appendStatus("[info] interactive shell commands are not supported in command mode.");
-        appendStatus("[hint] use shell commands directly, or open an SSH session tab for remote shell work.");
-        insertPrompt();
-        return;
-    }
-
     if (m_process->state() != QProcess::NotRunning) {
         appendOutput("\n");
         m_process->write(trimmed.toUtf8());
@@ -243,8 +236,8 @@ QString TerminalWidget::sanitizeCommand(const QString& command) const {
 }
 
 bool TerminalWidget::isInteractiveShellCommand(const QString& command) const {
-    static const QRegularExpression interactiveRe("^(bash|zsh|sh|fish)\\b");
-    return interactiveRe.match(command.trimmed()).hasMatch();
+    Q_UNUSED(command);
+    return false;
 }
 
 } // namespace svy::terminal

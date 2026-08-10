@@ -2,13 +2,12 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
-#include <QElapsedTimer>
 #include <QByteArray>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QUuid>
 #include <QString>
+#include <QTimer>
 
 #include "protocols/CredentialCache.h"
 
@@ -81,7 +80,15 @@ bool ensureKnownHost(ssh_session session, const svy::core::SessionProfile& profi
 namespace svy::protocols {
 
 SshClient::SshClient(QObject* parent)
-    : QObject(parent) {}
+    : QObject(parent) {
+#if SVYTERM_HAS_LIBSSH
+    m_pollTimer = new QTimer(this);
+    m_pollTimer->setInterval(25);
+    connect(m_pollTimer, &QTimer::timeout, this, [this]() {
+        pollShellOutput();
+    });
+#endif
+}
 
 SshClient::~SshClient() {
     disconnectSession();
@@ -233,6 +240,9 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
     }
 
     ssh_channel_set_blocking(m_shellChannel, 0);
+    if (m_pollTimer != nullptr) {
+        m_pollTimer->start();
+    }
     m_connected = true;
     emit outputReceived(QString("Connected to %1@%2:%3")
                             .arg(profile.username, profile.host)
@@ -256,77 +266,20 @@ bool SshClient::execute(const QString& command) {
         return false;
     }
 
-    const QString marker = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const QString markerPrefix = QString("__SVY_END_%1__:").arg(marker);
-    const QString payload = QString("%1\nprintf \"%2%s\\n\" \"$?\"\n").arg(command, markerPrefix);
-
-    const QByteArray cmd = payload.toUtf8();
+    const QByteArray cmd = (command + "\n").toUtf8();
     if (ssh_channel_write(m_shellChannel, cmd.constData(), static_cast<uint32_t>(cmd.size())) == SSH_ERROR) {
         emit errorOccurred(sshError(m_session, "Failed to write to SSH shell"));
         return false;
     }
-
-    QByteArray stdoutData;
-    QByteArray stderrData;
-    char buffer[4096];
-
-    QByteArray combined;
-    QElapsedTimer timer;
-    timer.start();
-    const qint64 maxWaitMs = 15000;
-
-    while (timer.elapsed() < maxWaitMs && !ssh_channel_is_eof(m_shellChannel)) {
-        bool gotData = false;
-
-        int nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 0);
-        if (nread == SSH_ERROR) {
-            emit errorOccurred(sshError(m_session, "Error reading SSH stdout"));
-            break;
-        }
-        if (nread > 0) {
-            stdoutData.append(buffer, nread);
-            combined.append(buffer, nread);
-            gotData = true;
-        }
-
-        nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 1);
-        if (nread == SSH_ERROR) {
-            emit errorOccurred(sshError(m_session, "Error reading SSH stderr"));
-            break;
-        }
-        if (nread > 0) {
-            stderrData.append(buffer, nread);
-            combined.append(buffer, nread);
-            gotData = true;
-        }
-
-        if (combined.contains(markerPrefix.toUtf8())) {
-            break;
-        }
-
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-
-        if (!gotData) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-        }
-    }
-
-    QString output = QString::fromUtf8(stdoutData) + QString::fromUtf8(stderrData);
-    const int markerPos = output.indexOf(markerPrefix);
-    if (markerPos >= 0) {
-        output = output.left(markerPos);
-    }
-
-    if (!output.isEmpty()) {
-        emit outputReceived(output);
-    }
-
     return true;
 #endif
 }
 
 void SshClient::disconnectSession() {
 #if SVYTERM_HAS_LIBSSH
+    if (m_pollTimer != nullptr) {
+        m_pollTimer->stop();
+    }
     if (m_shellChannel != nullptr) {
         ssh_channel_send_eof(m_shellChannel);
         ssh_channel_close(m_shellChannel);
@@ -345,5 +298,48 @@ void SshClient::disconnectSession() {
 bool SshClient::isConnected() const {
     return m_connected;
 }
+
+#if SVYTERM_HAS_LIBSSH
+void SshClient::pollShellOutput() {
+    if (!m_connected || m_shellChannel == nullptr) {
+        return;
+    }
+
+    QByteArray stdoutData;
+    QByteArray stderrData;
+    char buffer[4096];
+
+    while (true) {
+        const int nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 0);
+        if (nread == SSH_ERROR) {
+            emit errorOccurred(sshError(m_session, "Error reading SSH stdout"));
+            break;
+        }
+        if (nread <= 0) {
+            break;
+        }
+        stdoutData.append(buffer, nread);
+    }
+
+    while (true) {
+        const int nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 1);
+        if (nread == SSH_ERROR) {
+            emit errorOccurred(sshError(m_session, "Error reading SSH stderr"));
+            break;
+        }
+        if (nread <= 0) {
+            break;
+        }
+        stderrData.append(buffer, nread);
+    }
+
+    if (!stdoutData.isEmpty()) {
+        emit outputReceived(QString::fromUtf8(stdoutData));
+    }
+    if (!stderrData.isEmpty()) {
+        emit outputReceived(QString::fromUtf8(stderrData));
+    }
+}
+#endif
 
 } // namespace svy::protocols
