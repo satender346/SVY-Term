@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-latest
     env:
       QT_VERSION: 6.8.3
-      QT_ROOT: ${{ runner.temp }}/qt
+      QT_ROOT: /Users/runner/qt
 
     steps:
       - name: Checkout
