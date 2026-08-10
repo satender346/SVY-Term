@@ -48,7 +48,6 @@ private:
     svy::protocols::SshClient* m_client;
     int m_commandStart = 0;
     int m_defaultFontSize = 12;
-    QString m_promptPrefix;
 };
 
 } // namespace svy::terminal

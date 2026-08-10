@@ -40,10 +40,6 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
                .arg(m_profile.username, m_profile.host)
                .arg(m_profile.port));
 
-    const QString user = m_profile.username.trimmed().isEmpty() ? "user" : m_profile.username.trimmed();
-    const QString host = m_profile.host.trimmed().isEmpty() ? "host" : m_profile.host.trimmed();
-    m_promptPrefix = QString("%1@%2$ ").arg(user, host);
-
     if (m_client->connectSession(m_profile)) {
         append("Connected.");
         m_defaultFontSize = m_output->font().pointSize() > 0 ? m_output->font().pointSize() : 12;
@@ -121,32 +117,24 @@ bool SshTerminalWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void SshTerminalWidget::executeCommand(const QString& command, bool echoPromptLine) {
+    Q_UNUSED(echoPromptLine);
     const QString trimmed = command.trimmed();
     if (trimmed.isEmpty()) {
-        insertPrompt();
         return;
     }
 
     static const QRegularExpression sshCommandPrefix("^ssh\\s+");
     if (sshCommandPrefix.match(trimmed).hasMatch()) {
-        if (echoPromptLine) {
-            append(QString("$ %1\n").arg(trimmed));
-        }
         emit sshCommandRequested(trimmed);
-        insertPrompt();
         return;
     }
 
-    if (isInteractiveShellCommand(trimmed)) {
-        append("[info] interactive shell commands are not supported in SSH command mode.\n");
-        append("[hint] run direct remote commands, for example: ls, pwd, cat file.txt\n");
-        insertPrompt();
+    if (trimmed == "clear") {
+        m_output->clear();
+        m_commandStart = 0;
         return;
     }
 
-    if (echoPromptLine) {
-        append(QString("$ %1\n").arg(trimmed));
-    }
     m_client->execute(trimmed);
 }
 
@@ -155,16 +143,14 @@ void SshTerminalWidget::onOutputReceived(const QString& output) {
         return;
     }
     append(output);
-    if (m_output->toPlainText().endsWith('\n')) {
-        insertPrompt();
-    }
+    insertPrompt();
 }
 
 void SshTerminalWidget::onError(const QString& message) {
     if (m_output.isNull()) {
         return;
     }
-    append(QString("[error] %1").arg(message));
+    append(QString("[error] %1\n").arg(message));
     insertPrompt();
 }
 
@@ -180,11 +166,6 @@ void SshTerminalWidget::insertPrompt() {
     if (m_output.isNull()) {
         return;
     }
-    const QString all = m_output->toPlainText();
-    if (!all.isEmpty() && !all.endsWith('\n')) {
-        append("\n");
-    }
-    append(m_promptPrefix);
     m_commandStart = m_output->toPlainText().size();
 }
 
@@ -226,8 +207,8 @@ void SshTerminalWidget::showContextMenu(const QPoint& pos) {
 }
 
 bool SshTerminalWidget::isInteractiveShellCommand(const QString& command) const {
-    static const QRegularExpression interactiveRe("^(bash|zsh|sh|fish)\\b");
-    return interactiveRe.match(command.trimmed()).hasMatch();
+    Q_UNUSED(command);
+    return false;
 }
 
 } // namespace svy::terminal

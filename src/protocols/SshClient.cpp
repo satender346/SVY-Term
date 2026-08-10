@@ -73,16 +73,6 @@ bool ensureKnownHost(ssh_session session, const svy::core::SessionProfile& profi
     return false;
 }
 
-QString buildSudoCommandWithPassword(const QString& command, const QString& password) {
-    QString escaped = password;
-    escaped.replace("\\", "\\\\");
-    escaped.replace("\"", "\\\"");
-    escaped.replace("$", "\\$");
-    escaped.replace("`", "\\`");
-    const QString body = command.mid(4).trimmed();
-    return QString("printf \"%1\\n\" | sudo -S -p '' %2").arg(escaped, body);
-}
-
 } // namespace
 #endif
 
@@ -264,35 +254,7 @@ bool SshClient::execute(const QString& command) {
         return false;
     }
 
-    QString effectiveCommand = command;
-    if (command.startsWith("sudo ")) {
-        QString sudoPassword = m_current.password;
-        if (sudoPassword.isEmpty()) {
-            sudoPassword = svy::protocols::CredentialCache::getPassword(
-                m_current.username, m_current.host, m_current.port);
-        }
-        if (sudoPassword.isEmpty()) {
-            bool ok = false;
-            sudoPassword = QInputDialog::getText(
-                nullptr,
-                "Sudo Password",
-                QString("Sudo password for %1@%2").arg(m_current.username, m_current.host),
-                QLineEdit::Password,
-                QString(),
-                &ok);
-            if (!ok || sudoPassword.isEmpty()) {
-                emit errorOccurred("Sudo command cancelled: password required");
-                return false;
-            }
-            svy::protocols::CredentialCache::setPassword(
-                m_current.username, m_current.host, m_current.port, sudoPassword);
-            m_current.password = sudoPassword;
-        }
-
-        effectiveCommand = buildSudoCommandWithPassword(command, sudoPassword);
-    }
-
-    const QByteArray cmd = (effectiveCommand + "\n").toUtf8();
+    const QByteArray cmd = (command + "\n").toUtf8();
     if (ssh_channel_write(m_shellChannel, cmd.constData(), static_cast<uint32_t>(cmd.size())) == SSH_ERROR) {
         emit errorOccurred(sshError(m_session, "Failed to write to SSH shell"));
         return false;
