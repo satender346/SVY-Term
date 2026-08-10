@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QObject>
 #include <QProcess>
 #include <QWidget>
 
-class QLineEdit;
+class QEvent;
+class QKeyEvent;
 class QPlainTextEdit;
 
 namespace svy::terminal {
@@ -21,17 +23,20 @@ signals:
     void titleSuggested(const QString& title);
 
 private slots:
-    void onEnterPressed();
     void onReadyReadStdout();
     void onReadyReadStderr();
     void onProcessStateChanged(QProcess::ProcessState state);
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void appendOutput(const QString& text);
+    void appendStatus(const QString& text);
+    void insertPrompt();
+    void executeCommand(const QString& command, bool echoPromptLine);
 
     QPlainTextEdit* m_output;
-    QLineEdit* m_input;
     QProcess* m_process;
+    int m_commandStart = 0;
 };
 
 } // namespace svy::terminal

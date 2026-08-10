@@ -33,7 +33,7 @@ SessionProfile SessionManager::createDefaultLocalSession() const {
 SessionProfile SessionManager::createDefaultSshSession() const {
     SessionProfile profile;
     profile.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    profile.name = makeDefaultName("SSH");
+    profile.name = "";
     profile.type = SessionType::SSH;
     profile.port = 22;
     profile.keepAlive = true;
@@ -118,7 +118,17 @@ QJsonObject SessionProfile::toJson() const {
     out["host"] = host;
     out["port"] = port;
     out["username"] = username;
+    out["password"] = password;
     out["privateKeyPath"] = privateKeyPath;
+    out["useProxy"] = useProxy;
+    out["proxyHost"] = proxyHost;
+    out["proxyPort"] = proxyPort;
+    out["proxyUsername"] = proxyUsername;
+    out["proxyPassword"] = proxyPassword;
+    out["tunnelMode"] = tunnelMode;
+    out["tunnelLocalPort"] = tunnelLocalPort;
+    out["tunnelRemoteHost"] = tunnelRemoteHost;
+    out["tunnelRemotePort"] = tunnelRemotePort;
     out["x11Forwarding"] = x11Forwarding;
     out["compression"] = compression;
     out["keepAlive"] = keepAlive;
@@ -147,7 +157,17 @@ SessionProfile SessionProfile::fromJson(const QJsonObject& obj) {
     profile.host = obj.value("host").toString();
     profile.port = obj.value("port").toInt(22);
     profile.username = obj.value("username").toString();
+    profile.password = obj.value("password").toString();
     profile.privateKeyPath = obj.value("privateKeyPath").toString();
+    profile.useProxy = obj.value("useProxy").toBool(false);
+    profile.proxyHost = obj.value("proxyHost").toString();
+    profile.proxyPort = obj.value("proxyPort").toInt(0);
+    profile.proxyUsername = obj.value("proxyUsername").toString();
+    profile.proxyPassword = obj.value("proxyPassword").toString();
+    profile.tunnelMode = obj.value("tunnelMode").toString("none");
+    profile.tunnelLocalPort = obj.value("tunnelLocalPort").toInt(0);
+    profile.tunnelRemoteHost = obj.value("tunnelRemoteHost").toString();
+    profile.tunnelRemotePort = obj.value("tunnelRemotePort").toInt(0);
     profile.x11Forwarding = obj.value("x11Forwarding").toBool(false);
     profile.compression = obj.value("compression").toBool(false);
     profile.keepAlive = obj.value("keepAlive").toBool(true);

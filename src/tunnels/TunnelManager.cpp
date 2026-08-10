@@ -9,8 +9,24 @@ TunnelManager::TunnelManager(QObject* parent)
     : QObject(parent) {}
 
 bool TunnelManager::startTunnel(const TunnelProfile& profile) {
-    if (profile.gatewayHost.isEmpty() || profile.remoteHost.isEmpty() || profile.localPort <= 0 || profile.remotePort <= 0) {
-        emit errorOccurred("Gateway host and remote host are required");
+    if (profile.gatewayHost.isEmpty()) {
+        emit errorOccurred("Gateway host is required");
+        return false;
+    }
+
+    const QString mode = profile.mode.trimmed().isEmpty() ? "local" : profile.mode.trimmed().toLower();
+    if (mode != "local" && mode != "remote" && mode != "dynamic") {
+        emit errorOccurred("Tunnel mode must be local, remote, or dynamic");
+        return false;
+    }
+
+    if (profile.localPort <= 0) {
+        emit errorOccurred("Local port is required");
+        return false;
+    }
+
+    if (mode != "dynamic" && (profile.remoteHost.isEmpty() || profile.remotePort <= 0)) {
+        emit errorOccurred("Remote host and remote port are required");
         return false;
     }
 
@@ -19,18 +35,27 @@ bool TunnelManager::startTunnel(const TunnelProfile& profile) {
         started.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
 
-    const QString destination = QString("%1:%2:%3")
-                                    .arg(started.localHost)
-                                    .arg(started.localPort)
-                                    .arg(QString("%1:%2").arg(started.remoteHost).arg(started.remotePort));
     const QString gateway = started.gatewayUser.isEmpty()
                                 ? started.gatewayHost
                                 : QString("%1@%2").arg(started.gatewayUser, started.gatewayHost);
 
     QStringList args;
     args << "-N"
-         << "-p" << QString::number(started.gatewayPort)
-         << "-L" << destination;
+         << "-p" << QString::number(started.gatewayPort);
+
+    if (mode == "dynamic") {
+        const QString dynamicDestination = QString("%1:%2")
+                                               .arg(started.localHost)
+                                               .arg(started.localPort);
+        args << "-D" << dynamicDestination;
+    } else {
+        const QString destination = QString("%1:%2:%3")
+                                        .arg(started.localHost)
+                                        .arg(started.localPort)
+                                        .arg(QString("%1:%2").arg(started.remoteHost).arg(started.remotePort));
+        args << (mode == "remote" ? "-R" : "-L") << destination;
+    }
+
     if (!started.privateKeyPath.isEmpty()) {
         args << "-i" << started.privateKeyPath;
     }

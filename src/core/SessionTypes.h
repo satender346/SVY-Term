@@ -31,7 +31,19 @@ struct SessionProfile {
     QString host;
     int port = 22;
     QString username;
+    QString password;
     QString privateKeyPath;
+
+    bool useProxy = false;
+    QString proxyHost;
+    int proxyPort = 0;
+    QString proxyUsername;
+    QString proxyPassword;
+
+    QString tunnelMode = "none"; // none|local|remote|dynamic
+    int tunnelLocalPort = 0;
+    QString tunnelRemoteHost;
+    int tunnelRemotePort = 0;
 
     bool x11Forwarding = false;
     bool compression = false;

@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QDockWidget>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
@@ -67,6 +68,12 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
         m_tabs->removeTab(index);
         delete tab;
     });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        auto* sshTab = qobject_cast<svy::terminal::SshTerminalWidget*>(m_tabs->widget(index));
+        if (sshTab != nullptr) {
+            bindSftpToSession(sshTab->profile());
+        }
+    });
 
     connect(m_sessionManager, &svy::core::SessionManager::sessionsChanged,
             this, &MainWindow::onSessionsChanged);
@@ -103,6 +110,7 @@ void MainWindow::createSshTab(const svy::core::SessionProfile& profile) {
     auto* sshTerminal = new svy::terminal::SshTerminalWidget(profile, this);
     const int tabIndex = m_tabs->addTab(sshTerminal, profile.name.isEmpty() ? "SSH" : profile.name);
     m_tabs->setCurrentIndex(tabIndex);
+    bindSftpToSession(profile);
 }
 
 void MainWindow::onAddLocalSession() {
@@ -137,7 +145,7 @@ void MainWindow::onAddSshSession() {
     }
     profile = dialog.profile();
     if (profile.name.isEmpty()) {
-        profile.name = "SSH";
+        profile.name = profile.host.trimmed().isEmpty() ? "SSH" : profile.host.trimmed();
     }
     profile.id = id;
     profile.type = svy::core::SessionType::SSH;
@@ -194,9 +202,7 @@ void MainWindow::onOpenSftpForSelectedSession() {
         return;
     }
 
-    if (m_sftpClient->connectSession(profile)) {
-        onRefreshSftpDirectory();
-    }
+    bindSftpToSession(profile);
 }
 
 void MainWindow::onRefreshSftpDirectory() {
@@ -257,6 +263,9 @@ void MainWindow::buildMenu() {
     QMenu* toolsMenu = menuBar()->addMenu("Tools");
     QAction* broadcast = toolsMenu->addAction("Multi-exec: Broadcast command");
     toolsMenu->addSeparator();
+    QAction* splitTwo = toolsMenu->addAction("Split terminals (2 panes)");
+    QAction* splitFour = toolsMenu->addAction("Split terminals (4 panes)");
+    toolsMenu->addSeparator();
     QAction* createTunnel = toolsMenu->addAction("Start SSH tunnel (port forwarding)");
     QAction* stopTunnels = toolsMenu->addAction("Stop all tunnels");
 
@@ -267,6 +276,8 @@ void MainWindow::buildMenu() {
     connect(deleteSelected, &QAction::triggered, this, &MainWindow::onDeleteSelectedSession);
     connect(openSftp, &QAction::triggered, this, &MainWindow::onOpenSftpForSelectedSession);
     connect(broadcast, &QAction::triggered, this, &MainWindow::onBroadcastCommand);
+    connect(splitTwo, &QAction::triggered, this, &MainWindow::onOpenSplitTwo);
+    connect(splitFour, &QAction::triggered, this, &MainWindow::onOpenSplitFour);
     connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
     connect(stopTunnels, &QAction::triggered, this, &MainWindow::onStopAllTunnels);
     connect(quit, &QAction::triggered, this, &MainWindow::close);
@@ -302,13 +313,40 @@ void MainWindow::onBroadcastCommand() {
 
 void MainWindow::onCreateTunnel() {
     bool ok = false;
-    const QString gatewayHost = QInputDialog::getText(this, "Tunnel", "Gateway host", QLineEdit::Normal, QString(), &ok);
+
+    const auto selected = currentSelectedSession();
+
+    const QString mode = QInputDialog::getItem(
+        this,
+        "Tunnel",
+        "Mode",
+        {"local", "remote", "dynamic"},
+        0,
+        false,
+        &ok);
+    if (!ok || mode.isEmpty()) {
+        return;
+    }
+
+    const QString gatewayHost = QInputDialog::getText(
+        this,
+        "Tunnel",
+        "Gateway host",
+        QLineEdit::Normal,
+        selected.host,
+        &ok);
     if (!ok || gatewayHost.trimmed().isEmpty()) {
         return;
     }
 
-    const QString gatewayUser = QInputDialog::getText(this, "Tunnel", "Gateway username", QLineEdit::Normal, QString(), &ok);
-    if (!ok || gatewayUser.trimmed().isEmpty()) {
+    const QString gatewayUser = QInputDialog::getText(
+        this,
+        "Tunnel",
+        "Gateway username",
+        QLineEdit::Normal,
+        selected.username,
+        &ok);
+    if (!ok) {
         return;
     }
 
@@ -317,25 +355,39 @@ void MainWindow::onCreateTunnel() {
         return;
     }
 
-    const QString remoteHost = QInputDialog::getText(this, "Tunnel", "Remote host", QLineEdit::Normal, QString(), &ok);
-    if (!ok || remoteHost.trimmed().isEmpty()) {
-        return;
-    }
+    QString remoteHost;
+    int remotePort = 0;
+    if (mode != "dynamic") {
+        remoteHost = QInputDialog::getText(this, "Tunnel", "Remote host", QLineEdit::Normal, "127.0.0.1", &ok);
+        if (!ok || remoteHost.trimmed().isEmpty()) {
+            return;
+        }
 
-    const int remotePort = QInputDialog::getInt(this, "Tunnel", "Remote port", 22, 1, 65535, 1, &ok);
-    if (!ok) {
-        return;
+        remotePort = QInputDialog::getInt(this, "Tunnel", "Remote port", 22, 1, 65535, 1, &ok);
+        if (!ok) {
+            return;
+        }
     }
 
     svy::tunnels::TunnelProfile t;
     t.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    t.name = QString("%1:%2 -> %3:%4").arg(t.localHost).arg(localPort).arg(remoteHost).arg(remotePort);
+    t.mode = mode;
+    if (mode == "dynamic") {
+        t.name = QString("SOCKS %1:%2 via %3").arg(t.localHost).arg(localPort).arg(gatewayHost.trimmed());
+    } else {
+        t.name = QString("%1 %2:%3 -> %4:%5")
+                     .arg(mode.toUpper(), t.localHost)
+                     .arg(localPort)
+                     .arg(remoteHost)
+                     .arg(remotePort);
+    }
     t.gatewayHost = gatewayHost.trimmed();
     t.gatewayUser = gatewayUser.trimmed();
     t.gatewayPort = 22;
     t.localPort = localPort;
     t.remoteHost = remoteHost.trimmed();
     t.remotePort = remotePort;
+    t.privateKeyPath = selected.privateKeyPath;
 
     m_tunnelManager->startTunnel(t);
 }
@@ -346,6 +398,14 @@ void MainWindow::onStopAllTunnels() {
         m_tunnelManager->stopTunnel(t.id);
     }
     statusBar()->showMessage("Stopped all tunnels", 4000);
+}
+
+void MainWindow::onOpenSplitTwo() {
+    createSplitTab(2);
+}
+
+void MainWindow::onOpenSplitFour() {
+    createSplitTab(4);
 }
 
 svy::core::SessionProfile MainWindow::currentSelectedSession() const {
@@ -366,6 +426,41 @@ void MainWindow::refreshSessionList() {
             QString("%1 [%2]").arg(session.name, svy::core::sessionTypeToString(session.type)),
             m_sessionList);
         item->setData(Qt::UserRole, session.id);
+    }
+}
+
+void MainWindow::createSplitTab(int paneCount) {
+    if (paneCount != 2 && paneCount != 4) {
+        return;
+    }
+
+    auto* splitWidget = new QWidget(this);
+    auto* grid = new QGridLayout(splitWidget);
+    grid->setContentsMargins(4, 4, 4, 4);
+    grid->setSpacing(6);
+
+    const int columns = paneCount == 2 ? 2 : 2;
+    for (int i = 0; i < paneCount; ++i) {
+        auto* term = new svy::terminal::TerminalWidget(splitWidget);
+        const int row = paneCount == 2 ? 0 : (i / columns);
+        const int col = i % columns;
+        grid->addWidget(term, row, col);
+    }
+
+    const int tabIndex = m_tabs->addTab(splitWidget, QString("Split %1").arg(paneCount));
+    m_tabs->setCurrentIndex(tabIndex);
+}
+
+void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {
+    if (profile.type != svy::core::SessionType::SSH || profile.host.trimmed().isEmpty()) {
+        return;
+    }
+
+    if (m_sftpClient->connectSession(profile)) {
+        if (m_sftpPath->text().trimmed().isEmpty() || m_sftpPath->text().trimmed() == ".") {
+            m_sftpPath->setText(".");
+        }
+        onRefreshSftpDirectory();
     }
 }
 

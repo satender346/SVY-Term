@@ -1,10 +1,11 @@
 #pragma once
 
+#include <QObject>
 #include <QWidget>
 
 #include "core/SessionTypes.h"
 
-class QLineEdit;
+class QEvent;
 class QPlainTextEdit;
 
 namespace svy::protocols {
@@ -19,19 +20,22 @@ class SshTerminalWidget : public QWidget {
 public:
     explicit SshTerminalWidget(const svy::core::SessionProfile& profile, QWidget* parent = nullptr);
     void runCommand(const QString& command);
+    const svy::core::SessionProfile& profile() const;
 
 private slots:
-    void onEnterPressed();
     void onOutputReceived(const QString& output);
     void onError(const QString& message);
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void append(const QString& line);
+    void insertPrompt();
+    void executeCommand(const QString& command, bool echoPromptLine);
 
     svy::core::SessionProfile m_profile;
     QPlainTextEdit* m_output;
-    QLineEdit* m_input;
     svy::protocols::SshClient* m_client;
+    int m_commandStart = 0;
 };
 
 } // namespace svy::terminal

@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QString>
 
 #if SVYTERM_HAS_LIBSSH
 #include <fcntl.h>
@@ -20,6 +21,32 @@ QString sshError(ssh_session session, const QString& fallback) {
         return fallback;
     }
     return QString::fromUtf8(err);
+}
+
+QString shellEscapeSingleQuoted(const QString& value) {
+    QString escaped = value;
+    escaped.replace("'", "'\\''");
+    return QString("'%1'").arg(escaped);
+}
+
+QString buildProxyCommand(const svy::core::SessionProfile& profile) {
+    if (!profile.useProxy || profile.proxyHost.trimmed().isEmpty() || profile.proxyPort <= 0) {
+        return {};
+    }
+
+    const QString proxyEndpoint = QString("%1:%2").arg(profile.proxyHost.trimmed()).arg(profile.proxyPort);
+    const QString proxyAuth = (!profile.proxyUsername.trimmed().isEmpty() && !profile.proxyPassword.isEmpty())
+                                  ? QString(" --proxy-auth %1")
+                                        .arg(shellEscapeSingleQuoted(
+                                            QString("%1:%2").arg(profile.proxyUsername.trimmed(), profile.proxyPassword)))
+                                  : QString();
+
+    const QString command = QString(
+        "sh -c \"if command -v ncat >/dev/null 2>&1; then "
+        "exec ncat --proxy %1 --proxy-type socks5%2 %%h %%p; "
+        "else exec nc -X 5 -x %1 %%h %%p; fi\"")
+                                .arg(proxyEndpoint, proxyAuth);
+    return command;
 }
 
 } // namespace
@@ -69,6 +96,12 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
         ssh_options_set(m_sshSession, SSH_OPTIONS_IDENTITY, keyPath.constData());
     }
 
+    const QString proxyCommand = buildProxyCommand(profile);
+    if (!proxyCommand.isEmpty()) {
+        const QByteArray proxyCommandBytes = proxyCommand.toUtf8();
+        ssh_options_set(m_sshSession, SSH_OPTIONS_PROXYCOMMAND, proxyCommandBytes.constData());
+    }
+
     if (ssh_connect(m_sshSession) != SSH_OK) {
         emit errorOccurred(sshError(m_sshSession, "SFTP SSH connect failed"));
         ssh_free(m_sshSession);
@@ -77,6 +110,10 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
     }
 
     int authResult = ssh_userauth_publickey_auto(m_sshSession, nullptr, nullptr);
+    if (authResult != SSH_AUTH_SUCCESS && !profile.password.isEmpty()) {
+        const QByteArray pass = profile.password.toUtf8();
+        authResult = ssh_userauth_password(m_sshSession, nullptr, pass.constData());
+    }
     if (authResult != SSH_AUTH_SUCCESS) {
         bool ok = false;
         const QString password = QInputDialog::getText(

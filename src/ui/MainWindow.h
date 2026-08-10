@@ -42,6 +42,8 @@ private slots:
     void onBroadcastCommand();
     void onCreateTunnel();
     void onStopAllTunnels();
+    void onOpenSplitTwo();
+    void onOpenSplitFour();
     void onSessionsChanged();
     void onOpenSelectedSession();
 
@@ -49,6 +51,8 @@ private:
     svy::core::SessionProfile currentSelectedSession() const;
     void buildMenu();
     void refreshSessionList();
+    void createSplitTab(int paneCount);
+    void bindSftpToSession(const svy::core::SessionProfile& profile);
 
     svy::core::SessionManager* m_sessionManager;
     QListWidget* m_sessionList;

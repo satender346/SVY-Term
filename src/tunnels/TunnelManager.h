@@ -13,6 +13,7 @@ namespace svy::tunnels {
 struct TunnelProfile {
     QString id;
     QString name;
+    QString mode = "local"; // local|remote|dynamic
     QString gatewayHost;
     QString gatewayUser;
     int gatewayPort = 22;
