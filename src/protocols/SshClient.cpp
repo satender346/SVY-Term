@@ -1,5 +1,7 @@
 #include "protocols/SshClient.h"
 
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QByteArray>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -185,13 +187,26 @@ bool SshClient::execute(const QString& command) {
     QByteArray stderrData;
     char buffer[4096];
 
-    int nread = 0;
-    while ((nread = ssh_channel_read(channel, buffer, sizeof(buffer), 0)) > 0) {
-        stdoutData.append(buffer, nread);
-    }
+    while (!ssh_channel_is_eof(channel)) {
+        int nread = ssh_channel_read_timeout(channel, buffer, sizeof(buffer), 0, 200);
+        if (nread == SSH_ERROR) {
+            emit errorOccurred(sshError(m_session, "Error reading SSH stdout"));
+            break;
+        }
+        if (nread > 0) {
+            stdoutData.append(buffer, nread);
+        }
 
-    while ((nread = ssh_channel_read(channel, buffer, sizeof(buffer), 1)) > 0) {
-        stderrData.append(buffer, nread);
+        nread = ssh_channel_read_timeout(channel, buffer, sizeof(buffer), 1, 50);
+        if (nread == SSH_ERROR) {
+            emit errorOccurred(sshError(m_session, "Error reading SSH stderr"));
+            break;
+        }
+        if (nread > 0) {
+            stderrData.append(buffer, nread);
+        }
+
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
     }
 
     if (!stdoutData.isEmpty()) {

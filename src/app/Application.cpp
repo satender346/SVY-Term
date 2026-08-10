@@ -14,6 +14,11 @@ Application::Application(int& argc, char** argv)
     : m_qapp(argc, argv) {
     m_qapp.setApplicationName("SVY-Term");
     m_qapp.setOrganizationName("SVY");
+#ifdef SVYTERM_VERSION
+    m_qapp.setApplicationVersion(QString::fromLatin1(SVYTERM_VERSION));
+#else
+    m_qapp.setApplicationVersion("0.1.0");
+#endif
 }
 
 Application::~Application() = default;

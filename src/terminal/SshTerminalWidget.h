@@ -22,6 +22,8 @@ public:
     explicit SshTerminalWidget(const svy::core::SessionProfile& profile, QWidget* parent = nullptr);
     void runCommand(const QString& command);
     const svy::core::SessionProfile& profile() const;
+    void adjustFontSize(int delta);
+    void resetFontSize();
 
 private slots:
     void onOutputReceived(const QString& output);
@@ -40,6 +42,7 @@ private:
     QPlainTextEdit* m_output;
     svy::protocols::SshClient* m_client;
     int m_commandStart = 0;
+    int m_defaultFontSize = 12;
 };
 
 } // namespace svy::terminal

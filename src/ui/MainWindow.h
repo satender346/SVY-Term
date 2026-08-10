@@ -44,9 +44,13 @@ private slots:
     void onStopAllTunnels();
     void onOpenSplitTwo();
     void onOpenSplitFour();
+    void onZoomIn();
+    void onZoomOut();
+    void onZoomReset();
     void onThemeLight();
     void onThemeDark();
     void onThemeSystem();
+    void onHelpAbout();
     void onSessionsChanged();
     void onOpenSelectedSession();
 
@@ -59,6 +63,9 @@ private:
     void bindSftpToSession(const svy::core::SessionProfile& profile);
     QWidget* createPaneWidgetForChoice(const QString& choice, QWidget* parent);
     void applyTheme(const QString& mode);
+    void applyFontDeltaToCurrentTab(int delta);
+    void resetFontOnCurrentTab();
+    void handleLocalSshCommand(const QString& command);
 
     svy::core::SessionManager* m_sessionManager;
     QListWidget* m_sessionList;

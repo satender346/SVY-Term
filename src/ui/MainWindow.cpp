@@ -2,11 +2,13 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDockWidget>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPalette>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -18,6 +20,8 @@
 #include <QWidget>
 
 #include <QUuid>
+#include <QRegularExpression>
+#include <QSysInfo>
 
 #include "core/SessionTypes.h"
 #include "protocols/SftpClient.h"
@@ -102,6 +106,8 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
 
 svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) {
     auto* terminal = new svy::terminal::TerminalWidget(this);
+    connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
+            this, &MainWindow::handleLocalSshCommand);
     const int tabIndex = m_tabs->addTab(terminal, title);
     m_tabs->setCurrentIndex(tabIndex);
     return terminal;
@@ -109,7 +115,11 @@ svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) 
 
 void MainWindow::createSshTab(const svy::core::SessionProfile& profile) {
     auto* sshTerminal = new svy::terminal::SshTerminalWidget(profile, this);
-    const int tabIndex = m_tabs->addTab(sshTerminal, profile.name.isEmpty() ? "SSH" : profile.name);
+    const QString label = profile.host.trimmed().isEmpty()
+                              ? (profile.name.isEmpty() ? "SSH" : profile.name)
+                              : QString("%1 (%2)").arg(profile.name.isEmpty() ? profile.host : profile.name,
+                                                        profile.host);
+    const int tabIndex = m_tabs->addTab(sshTerminal, label);
     m_tabs->setCurrentIndex(tabIndex);
     bindSftpToSession(profile);
 }
@@ -276,10 +286,17 @@ void MainWindow::buildMenu() {
     QAction* stopTunnels = toolsMenu->addAction("Stop all tunnels");
 
     QMenu* viewMenu = menuBar()->addMenu("View");
+    QAction* zoomIn = viewMenu->addAction("Zoom In");
+    QAction* zoomOut = viewMenu->addAction("Zoom Out");
+    QAction* zoomReset = viewMenu->addAction("Reset Zoom");
+    viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu("Theme");
     QAction* themeLight = themeMenu->addAction("Light");
     QAction* themeDark = themeMenu->addAction("Dark");
     QAction* themeSystem = themeMenu->addAction("System");
+
+    QMenu* helpMenu = menuBar()->addMenu("Help");
+    QAction* aboutAction = helpMenu->addAction("About SVY-Term");
 
     connect(newLocal, &QAction::triggered, this, &MainWindow::onAddLocalSession);
     connect(newSsh, &QAction::triggered, this, &MainWindow::onAddSshSession);
@@ -292,9 +309,13 @@ void MainWindow::buildMenu() {
     connect(splitFour, &QAction::triggered, this, &MainWindow::onOpenSplitFour);
     connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
     connect(stopTunnels, &QAction::triggered, this, &MainWindow::onStopAllTunnels);
+    connect(zoomIn, &QAction::triggered, this, &MainWindow::onZoomIn);
+    connect(zoomOut, &QAction::triggered, this, &MainWindow::onZoomOut);
+    connect(zoomReset, &QAction::triggered, this, &MainWindow::onZoomReset);
     connect(themeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
     connect(themeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
     connect(themeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
+    connect(aboutAction, &QAction::triggered, this, &MainWindow::onHelpAbout);
     connect(quit, &QAction::triggered, this, &MainWindow::close);
 }
 
@@ -423,6 +444,18 @@ void MainWindow::onOpenSplitFour() {
     createSplitTab(4);
 }
 
+void MainWindow::onZoomIn() {
+    applyFontDeltaToCurrentTab(+1);
+}
+
+void MainWindow::onZoomOut() {
+    applyFontDeltaToCurrentTab(-1);
+}
+
+void MainWindow::onZoomReset() {
+    resetFontOnCurrentTab();
+}
+
 svy::core::SessionProfile MainWindow::currentSelectedSession() const {
     const QString sessionId = currentSelectedSessionId();
     if (sessionId.isEmpty()) {
@@ -489,7 +522,10 @@ void MainWindow::createSplitTab(int paneCount) {
 
         QWidget* pane = createPaneWidgetForChoice(choice, splitWidget);
         if (pane == nullptr) {
-            pane = new svy::terminal::TerminalWidget(splitWidget);
+            auto* localFallback = new svy::terminal::TerminalWidget(splitWidget);
+            connect(localFallback, &svy::terminal::TerminalWidget::sshCommandRequested,
+                    this, &MainWindow::handleLocalSshCommand);
+            pane = localFallback;
         }
 
         const int row = paneCount == 2 ? 0 : (i / columns);
@@ -503,7 +539,10 @@ void MainWindow::createSplitTab(int paneCount) {
 
 QWidget* MainWindow::createPaneWidgetForChoice(const QString& choice, QWidget* parent) {
     if (choice == "Local terminal") {
-        return new svy::terminal::TerminalWidget(parent);
+    auto* terminal = new svy::terminal::TerminalWidget(parent);
+    connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
+        this, &MainWindow::handleLocalSshCommand);
+    return terminal;
     }
 
     if (!choice.startsWith("SSH: ")) {
@@ -536,29 +575,165 @@ void MainWindow::onThemeSystem() {
     applyTheme("system");
 }
 
+void MainWindow::onHelpAbout() {
+    const QString version = QCoreApplication::applicationVersion().isEmpty()
+                                ? QStringLiteral("0.1.0")
+                                : QCoreApplication::applicationVersion();
+#if SVYTERM_HAS_LIBSSH
+    const QString sshBackend = "libssh (enabled)";
+#else
+    const QString sshBackend = "fallback (libssh disabled)";
+#endif
+
+    const QString info = QString(
+        "SVY-Term\n"
+        "Release version: %1\n"
+        "Build: %2 %3\n"
+        "Qt: %4\n"
+        "Platform: %5\n"
+        "SSH backend: %6")
+                             .arg(version)
+                             .arg(QString::fromLatin1(__DATE__))
+                             .arg(QString::fromLatin1(__TIME__))
+                             .arg(QString::fromLatin1(QT_VERSION_STR))
+                             .arg(QSysInfo::prettyProductName())
+                             .arg(sshBackend);
+
+    QMessageBox::about(this, "About SVY-Term", info);
+}
+
 void MainWindow::applyTheme(const QString& mode) {
+    static const QPalette systemPalette = qApp->palette();
+
     if (mode == "dark") {
-        qApp->setStyleSheet(
-            "QMainWindow { background: #111827; color: #e5e7eb; }"
-            "QWidget { color: #e5e7eb; }"
-            "QMenuBar, QMenu, QDockWidget, QTabWidget::pane { background: #1f2937; }"
-            "QPlainTextEdit, QListWidget, QLineEdit { background: #0b1220; color: #e5e7eb; border: 1px solid #374151; }"
-            "QPushButton { background: #374151; border: 1px solid #4b5563; padding: 4px 8px; }"
-            "QPushButton:hover { background: #4b5563; }");
+        QPalette p;
+        p.setColor(QPalette::Window, QColor(23, 31, 45));
+        p.setColor(QPalette::WindowText, QColor(229, 231, 235));
+        p.setColor(QPalette::Base, QColor(11, 18, 32));
+        p.setColor(QPalette::AlternateBase, QColor(31, 41, 55));
+        p.setColor(QPalette::ToolTipBase, QColor(31, 41, 55));
+        p.setColor(QPalette::ToolTipText, QColor(229, 231, 235));
+        p.setColor(QPalette::Text, QColor(229, 231, 235));
+        p.setColor(QPalette::Button, QColor(55, 65, 81));
+        p.setColor(QPalette::ButtonText, QColor(229, 231, 235));
+        p.setColor(QPalette::BrightText, Qt::red);
+        p.setColor(QPalette::Link, QColor(96, 165, 250));
+        p.setColor(QPalette::Highlight, QColor(59, 130, 246));
+        p.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+        qApp->setPalette(p);
+        qApp->setStyleSheet(QString());
         return;
     }
 
     if (mode == "light") {
-        qApp->setStyleSheet(
-            "QMainWindow { background: #f8fafc; color: #0f172a; }"
-            "QMenuBar, QMenu, QDockWidget, QTabWidget::pane { background: #ffffff; }"
-            "QPlainTextEdit, QListWidget, QLineEdit { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }"
-            "QPushButton { background: #e2e8f0; border: 1px solid #cbd5e1; padding: 4px 8px; }"
-            "QPushButton:hover { background: #cbd5e1; }");
+        qApp->setPalette(systemPalette);
+        qApp->setStyleSheet(QString());
         return;
     }
 
+    qApp->setPalette(systemPalette);
     qApp->setStyleSheet(QString());
+}
+
+void MainWindow::applyFontDeltaToCurrentTab(int delta) {
+    QWidget* tab = m_tabs->currentWidget();
+    if (tab == nullptr) {
+        return;
+    }
+
+    if (auto* local = qobject_cast<svy::terminal::TerminalWidget*>(tab)) {
+        local->adjustFontSize(delta);
+        return;
+    }
+
+    if (auto* ssh = qobject_cast<svy::terminal::SshTerminalWidget*>(tab)) {
+        ssh->adjustFontSize(delta);
+        return;
+    }
+
+    const auto localChildren = tab->findChildren<svy::terminal::TerminalWidget*>();
+    for (auto* term : localChildren) {
+        term->adjustFontSize(delta);
+    }
+    const auto sshChildren = tab->findChildren<svy::terminal::SshTerminalWidget*>();
+    for (auto* term : sshChildren) {
+        term->adjustFontSize(delta);
+    }
+}
+
+void MainWindow::resetFontOnCurrentTab() {
+    QWidget* tab = m_tabs->currentWidget();
+    if (tab == nullptr) {
+        return;
+    }
+
+    if (auto* local = qobject_cast<svy::terminal::TerminalWidget*>(tab)) {
+        local->resetFontSize();
+        return;
+    }
+
+    if (auto* ssh = qobject_cast<svy::terminal::SshTerminalWidget*>(tab)) {
+        ssh->resetFontSize();
+        return;
+    }
+
+    const auto localChildren = tab->findChildren<svy::terminal::TerminalWidget*>();
+    for (auto* term : localChildren) {
+        term->resetFontSize();
+    }
+    const auto sshChildren = tab->findChildren<svy::terminal::SshTerminalWidget*>();
+    for (auto* term : sshChildren) {
+        term->resetFontSize();
+    }
+}
+
+void MainWindow::handleLocalSshCommand(const QString& command) {
+    // Expected forms: ssh user@host, ssh host, ssh -p 2222 user@host
+    QString user;
+    QString host;
+    int port = 22;
+
+    const QStringList parts = command.simplified().split(' ', Qt::SkipEmptyParts);
+    for (int i = 1; i < parts.size(); ++i) {
+        const QString token = parts.at(i);
+        if (token == "-p" && i + 1 < parts.size()) {
+            bool ok = false;
+            const int parsedPort = parts.at(i + 1).toInt(&ok);
+            if (ok && parsedPort > 0) {
+                port = parsedPort;
+            }
+            ++i;
+            continue;
+        }
+        if (token.startsWith('-')) {
+            continue;
+        }
+        if (token.contains('@')) {
+            const QStringList uh = token.split('@');
+            if (uh.size() == 2) {
+                user = uh.at(0);
+                host = uh.at(1);
+            }
+        } else {
+            host = token;
+        }
+        break;
+    }
+
+    if (host.trimmed().isEmpty()) {
+        statusBar()->showMessage("Unable to parse SSH target. Use: ssh user@host", 5000);
+        return;
+    }
+
+    svy::core::SessionProfile quick = m_sessionManager->createDefaultSshSession();
+    quick.name = host.trimmed();
+    quick.host = host.trimmed();
+    quick.port = port;
+    quick.username = user.trimmed();
+    quick.type = svy::core::SessionType::SSH;
+
+    createSshTab(quick);
+    statusBar()->showMessage("Opened internal SSH tab for interactive login.", 5000);
 }
 
 void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {

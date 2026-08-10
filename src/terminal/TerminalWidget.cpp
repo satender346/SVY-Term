@@ -34,6 +34,7 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     connect(m_output, &QPlainTextEdit::customContextMenuRequested, this, &TerminalWidget::showContextMenu);
 
     appendStatus("[ready]");
+    m_defaultFontSize = m_output->font().pointSize() > 0 ? m_output->font().pointSize() : 12;
     insertPrompt();
 }
 
@@ -43,6 +44,20 @@ void TerminalWidget::runCommand(const QString& command) {
 
 bool TerminalWidget::isBusy() const {
     return m_process->state() != QProcess::NotRunning;
+}
+
+void TerminalWidget::adjustFontSize(int delta) {
+    QFont f = m_output->font();
+    const int current = f.pointSize() > 0 ? f.pointSize() : m_defaultFontSize;
+    const int next = qBound(8, current + delta, 36);
+    f.setPointSize(next);
+    m_output->setFont(f);
+}
+
+void TerminalWidget::resetFontSize() {
+    QFont f = m_output->font();
+    f.setPointSize(m_defaultFontSize);
+    m_output->setFont(f);
 }
 
 bool TerminalWidget::eventFilter(QObject* watched, QEvent* event) {
@@ -60,7 +75,6 @@ bool TerminalWidget::eventFilter(QObject* watched, QEvent* event) {
     if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
         const QString text = m_output->toPlainText();
         const QString command = text.mid(m_commandStart);
-        appendOutput("\n");
         executeCommand(command, false);
         return true;
     }
@@ -79,6 +93,15 @@ bool TerminalWidget::eventFilter(QObject* watched, QEvent* event) {
 void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine) {
     const QString trimmed = command.trimmed();
     if (trimmed.isEmpty()) {
+        appendOutput("\n");
+        insertPrompt();
+        return;
+    }
+
+    static const QRegularExpression sshCommandPrefix("^ssh\\s+");
+    if (sshCommandPrefix.match(trimmed).hasMatch()) {
+        appendOutput("\n");
+        emit sshCommandRequested(trimmed);
         insertPrompt();
         return;
     }
@@ -91,8 +114,10 @@ void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine)
     }
 
     if (m_process->state() != QProcess::NotRunning) {
-        appendStatus("[busy] previous command still running");
-        insertPrompt();
+        appendOutput("\n");
+        m_process->write(trimmed.toUtf8());
+        m_process->write("\n");
+        m_commandStart = m_output->toPlainText().size();
         return;
     }
 
@@ -100,6 +125,8 @@ void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine)
 
     if (echoPromptLine) {
         appendOutput(QString("$ %1\n").arg(prepared));
+    } else {
+        appendOutput("\n");
     }
     m_process->setProgram("/bin/zsh");
     m_process->setArguments({"-lc", prepared});

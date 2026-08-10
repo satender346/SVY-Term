@@ -19,9 +19,12 @@ public:
 
     void runCommand(const QString& command);
     bool isBusy() const;
+    void adjustFontSize(int delta);
+    void resetFontSize();
 
 signals:
     void titleSuggested(const QString& title);
+    void sshCommandRequested(const QString& command);
 
 private slots:
     void onReadyReadStdout();
@@ -42,6 +45,7 @@ private:
     QPlainTextEdit* m_output;
     QProcess* m_process;
     int m_commandStart = 0;
+    int m_defaultFontSize = 12;
 };
 
 } // namespace svy::terminal

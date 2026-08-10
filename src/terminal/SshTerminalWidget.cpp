@@ -42,6 +42,7 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
 
     if (m_client->connectSession(m_profile)) {
         append("Connected.");
+        m_defaultFontSize = m_output->font().pointSize() > 0 ? m_output->font().pointSize() : 12;
         insertPrompt();
     }
 }
@@ -52,6 +53,20 @@ void SshTerminalWidget::runCommand(const QString& command) {
 
 const svy::core::SessionProfile& SshTerminalWidget::profile() const {
     return m_profile;
+}
+
+void SshTerminalWidget::adjustFontSize(int delta) {
+    QFont f = m_output->font();
+    const int current = f.pointSize() > 0 ? f.pointSize() : m_defaultFontSize;
+    const int next = qBound(8, current + delta, 36);
+    f.setPointSize(next);
+    m_output->setFont(f);
+}
+
+void SshTerminalWidget::resetFontSize() {
+    QFont f = m_output->font();
+    f.setPointSize(m_defaultFontSize);
+    m_output->setFont(f);
 }
 
 bool SshTerminalWidget::eventFilter(QObject* watched, QEvent* event) {

@@ -57,6 +57,7 @@ add_executable(SVY-Term
 target_include_directories(SVY-Term PRIVATE src)
 
 target_compile_definitions(SVY-Term PRIVATE SVYTERM_HAS_LIBSSH=${SVYTERM_HAS_LIBSSH})
+target_compile_definitions(SVY-Term PRIVATE SVYTERM_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(SVY-Term PRIVATE
     Qt6::Core
