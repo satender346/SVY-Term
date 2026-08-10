@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QHash>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -16,6 +17,7 @@ struct TunnelProfile {
     QString mode = "local"; // local|remote|dynamic
     QString gatewayHost;
     QString gatewayUser;
+    QString gatewayPassword;
     int gatewayPort = 22;
     QString localHost = "127.0.0.1";
     int localPort = 0;
@@ -42,6 +44,7 @@ signals:
 private:
     QVector<TunnelProfile> m_active;
     QHash<QString, QPointer<QProcess>> m_processes;
+    QSet<QString> m_stoppingIds;
 };
 
 } // namespace svy::tunnels

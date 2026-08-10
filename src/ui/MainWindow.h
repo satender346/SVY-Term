@@ -3,9 +3,11 @@
 #include <QMainWindow>
 
 #include "core/SessionManager.h"
+#include "tunnels/TunnelManager.h"
 
 class QListWidget;
 class QLineEdit;
+class QTableWidget;
 class QTabWidget;
 
 namespace svy::terminal {
@@ -44,6 +46,10 @@ private slots:
     void onSftpItemActivated();
     void onBroadcastCommand();
     void onCreateTunnel();
+    void onEditSelectedTunnel();
+    void onDeleteSelectedTunnel();
+    void onStartSelectedTunnel();
+    void onStopSelectedTunnel();
     void onStopAllTunnels();
     void onOpenSplitTwo();
     void onOpenSplitFour();
@@ -71,15 +77,22 @@ private:
     void handleLocalSshCommand(const QString& command);
     void handleSshCommand(const QString& command, const QString& fallbackUsername = QString());
     QString buildRemotePath(const QString& basePath, const QString& entryName) const;
+    void refreshTunnelTable();
+    QString selectedTunnelId() const;
+    bool promptTunnelProfile(svy::tunnels::TunnelProfile* tunnel,
+                             const svy::core::SessionProfile& defaults,
+                             bool editing);
 
     svy::core::SessionManager* m_sessionManager;
     QListWidget* m_sessionList;
     QTabWidget* m_tabs;
     svy::protocols::SftpClient* m_sftpClient;
     svy::tunnels::TunnelManager* m_tunnelManager;
+    QTableWidget* m_tunnelTable;
     QListWidget* m_sftpList;
     QLineEdit* m_sftpPath;
     QString m_activeSftpSessionId;
+    QVector<svy::tunnels::TunnelProfile> m_tunnelProfiles;
 };
 
 } // namespace svy::ui

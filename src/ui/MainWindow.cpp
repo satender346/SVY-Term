@@ -2,11 +2,16 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDockWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QGridLayout>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
@@ -16,16 +21,21 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
 
 #include <QUuid>
 #include <QRegularExpression>
 #include <QSysInfo>
 
 #include "core/SessionTypes.h"
+#include "protocols/CredentialCache.h"
 #include "protocols/SftpClient.h"
 #include "terminal/SshTerminalWidget.h"
 #include "terminal/TerminalWidget.h"
@@ -41,6 +51,7 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
             m_tabs(new QTabWidget(this)),
             m_sftpClient(new svy::protocols::SftpClient(this)),
             m_tunnelManager(new svy::tunnels::TunnelManager(this)),
+        m_tunnelTable(new QTableWidget(this)),
             m_sftpList(new QListWidget(this)),
             m_sftpPath(new QLineEdit(this)) {
     setWindowTitle("SVY-Term");
@@ -53,6 +64,41 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     sessionsDock->setWidget(m_sessionList);
     sessionsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::LeftDockWidgetArea, sessionsDock);
+
+    auto* tunnelsDock = new QDockWidget("SSH Tunnels", this);
+    auto* tunnelsContainer = new QWidget(this);
+    auto* tunnelsLayout = new QVBoxLayout(tunnelsContainer);
+    auto* tunnelsButtons = new QHBoxLayout();
+    auto* addTunnelButton = new QPushButton("New", tunnelsContainer);
+    auto* startTunnelButton = new QPushButton("Start", tunnelsContainer);
+    auto* stopTunnelButton = new QPushButton("Stop", tunnelsContainer);
+    auto* editTunnelButton = new QPushButton("Edit", tunnelsContainer);
+    auto* deleteTunnelButton = new QPushButton("Delete", tunnelsContainer);
+
+    m_tunnelTable->setColumnCount(5);
+    m_tunnelTable->setHorizontalHeaderLabels({"Name", "Mode", "Forward", "Gateway", "Status"});
+    m_tunnelTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_tunnelTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tunnelTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_tunnelTable->verticalHeader()->setVisible(false);
+    m_tunnelTable->horizontalHeader()->setStretchLastSection(true);
+    m_tunnelTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_tunnelTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_tunnelTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_tunnelTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_tunnelTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+
+    tunnelsButtons->addWidget(addTunnelButton);
+    tunnelsButtons->addWidget(startTunnelButton);
+    tunnelsButtons->addWidget(stopTunnelButton);
+    tunnelsButtons->addWidget(editTunnelButton);
+    tunnelsButtons->addWidget(deleteTunnelButton);
+    tunnelsLayout->addLayout(tunnelsButtons);
+    tunnelsLayout->addWidget(m_tunnelTable);
+    tunnelsContainer->setLayout(tunnelsLayout);
+    tunnelsDock->setWidget(tunnelsContainer);
+    tunnelsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, tunnelsDock);
 
     auto* sftpDock = new QDockWidget("SFTP Browser", this);
     auto* sftpContainer = new QWidget(this);
@@ -105,12 +151,22 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     connect(m_tunnelManager, &svy::tunnels::TunnelManager::tunnelStarted,
             this, [this](const svy::tunnels::TunnelProfile& t) {
                 statusBar()->showMessage(QString("Tunnel started: %1").arg(t.name), 5000);
+            refreshTunnelTable();
             });
+        connect(m_tunnelManager, &svy::tunnels::TunnelManager::tunnelStopped,
+            this, [this](const QString&) { refreshTunnelTable(); });
     connect(m_tunnelManager, &svy::tunnels::TunnelManager::errorOccurred,
             this, [this](const QString& m) { QMessageBox::warning(this, "Tunnel", m); });
+        connect(addTunnelButton, &QPushButton::clicked, this, &MainWindow::onCreateTunnel);
+        connect(startTunnelButton, &QPushButton::clicked, this, &MainWindow::onStartSelectedTunnel);
+        connect(stopTunnelButton, &QPushButton::clicked, this, &MainWindow::onStopSelectedTunnel);
+        connect(editTunnelButton, &QPushButton::clicked, this, &MainWindow::onEditSelectedTunnel);
+        connect(deleteTunnelButton, &QPushButton::clicked, this, &MainWindow::onDeleteSelectedTunnel);
+        connect(m_tunnelTable, &QTableWidget::doubleClicked, this, [this]() { onEditSelectedTunnel(); });
 
     buildMenu();
     refreshSessionList();
+        refreshTunnelTable();
 }
 
 svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) {
@@ -380,7 +436,11 @@ void MainWindow::buildMenu() {
     QAction* splitTwo = toolsMenu->addAction("Split terminals (2 panes)");
     QAction* splitFour = toolsMenu->addAction("Split terminals (4 panes)");
     toolsMenu->addSeparator();
-    QAction* createTunnel = toolsMenu->addAction("Start SSH tunnel (port forwarding)");
+    QAction* createTunnel = toolsMenu->addAction("New SSH tunnel (port forwarding)");
+    QAction* editTunnel = toolsMenu->addAction("Edit selected tunnel");
+    QAction* deleteTunnel = toolsMenu->addAction("Delete selected tunnel");
+    QAction* startTunnel = toolsMenu->addAction("Start selected tunnel");
+    QAction* stopTunnel = toolsMenu->addAction("Stop selected tunnel");
     QAction* stopTunnels = toolsMenu->addAction("Stop all tunnels");
 
     QMenu* viewMenu = menuBar()->addMenu("View");
@@ -406,6 +466,10 @@ void MainWindow::buildMenu() {
     connect(splitTwo, &QAction::triggered, this, &MainWindow::onOpenSplitTwo);
     connect(splitFour, &QAction::triggered, this, &MainWindow::onOpenSplitFour);
     connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
+    connect(editTunnel, &QAction::triggered, this, &MainWindow::onEditSelectedTunnel);
+    connect(deleteTunnel, &QAction::triggered, this, &MainWindow::onDeleteSelectedTunnel);
+    connect(startTunnel, &QAction::triggered, this, &MainWindow::onStartSelectedTunnel);
+    connect(stopTunnel, &QAction::triggered, this, &MainWindow::onStopSelectedTunnel);
     connect(stopTunnels, &QAction::triggered, this, &MainWindow::onStopAllTunnels);
     connect(zoomIn, &QAction::triggered, this, &MainWindow::onZoomIn);
     connect(zoomOut, &QAction::triggered, this, &MainWindow::onZoomOut);
@@ -446,84 +510,126 @@ void MainWindow::onBroadcastCommand() {
 }
 
 void MainWindow::onCreateTunnel() {
-    bool ok = false;
-
     const auto selected = currentSelectedSession();
-
-    const QString mode = QInputDialog::getItem(
-        this,
-        "Tunnel",
-        "Mode",
-        {"local", "remote", "dynamic"},
-        0,
-        false,
-        &ok);
-    if (!ok || mode.isEmpty()) {
-        return;
-    }
-
-    const QString gatewayHost = QInputDialog::getText(
-        this,
-        "Tunnel",
-        "Gateway host",
-        QLineEdit::Normal,
-        selected.host,
-        &ok);
-    if (!ok || gatewayHost.trimmed().isEmpty()) {
-        return;
-    }
-
-    const QString gatewayUser = QInputDialog::getText(
-        this,
-        "Tunnel",
-        "Gateway username",
-        QLineEdit::Normal,
-        selected.username,
-        &ok);
-    if (!ok) {
-        return;
-    }
-
-    const int localPort = QInputDialog::getInt(this, "Tunnel", "Local port", 8080, 1, 65535, 1, &ok);
-    if (!ok) {
-        return;
-    }
-
-    QString remoteHost;
-    int remotePort = 0;
-    if (mode != "dynamic") {
-        remoteHost = QInputDialog::getText(this, "Tunnel", "Remote host", QLineEdit::Normal, "127.0.0.1", &ok);
-        if (!ok || remoteHost.trimmed().isEmpty()) {
-            return;
-        }
-
-        remotePort = QInputDialog::getInt(this, "Tunnel", "Remote port", 22, 1, 65535, 1, &ok);
-        if (!ok) {
-            return;
+    svy::tunnels::TunnelProfile draft;
+    draft.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    draft.mode = "local";
+    draft.localPort = 8080;
+    draft.remoteHost = "127.0.0.1";
+    draft.remotePort = 22;
+    if (selected.type == svy::core::SessionType::SSH) {
+        draft.gatewayHost = selected.host.trimmed();
+        draft.gatewayUser = selected.username.trimmed();
+        draft.privateKeyPath = selected.privateKeyPath;
+        draft.gatewayPassword = selected.password;
+        if (draft.gatewayPassword.isEmpty()) {
+            draft.gatewayPassword = svy::protocols::CredentialCache::getPassword(
+                selected.username, selected.host, selected.port);
         }
     }
 
-    svy::tunnels::TunnelProfile t;
-    t.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    t.mode = mode;
-    if (mode == "dynamic") {
-        t.name = QString("SOCKS %1:%2 via %3").arg(t.localHost).arg(localPort).arg(gatewayHost.trimmed());
-    } else {
-        t.name = QString("%1 %2:%3 -> %4:%5")
-                     .arg(mode.toUpper(), t.localHost)
-                     .arg(localPort)
-                     .arg(remoteHost)
-                     .arg(remotePort);
+    if (!promptTunnelProfile(&draft, selected, false)) {
+        return;
     }
-    t.gatewayHost = gatewayHost.trimmed();
-    t.gatewayUser = gatewayUser.trimmed();
-    t.gatewayPort = 22;
-    t.localPort = localPort;
-    t.remoteHost = remoteHost.trimmed();
-    t.remotePort = remotePort;
-    t.privateKeyPath = selected.privateKeyPath;
 
-    m_tunnelManager->startTunnel(t);
+    m_tunnelProfiles.push_back(draft);
+    refreshTunnelTable();
+    m_tunnelManager->startTunnel(draft);
+}
+
+void MainWindow::onEditSelectedTunnel() {
+    const QString tunnelId = selectedTunnelId();
+    if (tunnelId.isEmpty()) {
+        QMessageBox::information(this, "Tunnel", "Select a tunnel first.");
+        return;
+    }
+
+    for (int i = 0; i < m_tunnelProfiles.size(); ++i) {
+        if (m_tunnelProfiles[i].id != tunnelId) {
+            continue;
+        }
+
+        svy::tunnels::TunnelProfile edited = m_tunnelProfiles[i];
+        const auto session = currentSelectedSession();
+        if (!promptTunnelProfile(&edited, session, true)) {
+            return;
+        }
+        edited.id = tunnelId;
+
+        const auto activeTunnels = m_tunnelManager->activeTunnels();
+        const bool wasActive = std::any_of(activeTunnels.cbegin(),
+                           activeTunnels.cend(),
+                           [&tunnelId](const svy::tunnels::TunnelProfile& t) { return t.id == tunnelId; });
+        if (wasActive) {
+            m_tunnelManager->stopTunnel(tunnelId);
+        }
+
+        m_tunnelProfiles[i] = edited;
+        refreshTunnelTable();
+        if (wasActive) {
+            m_tunnelManager->startTunnel(edited);
+        }
+        return;
+    }
+
+    QMessageBox::warning(this, "Tunnel", "Selected tunnel was not found.");
+}
+
+void MainWindow::onDeleteSelectedTunnel() {
+    const QString tunnelId = selectedTunnelId();
+    if (tunnelId.isEmpty()) {
+        QMessageBox::information(this, "Tunnel", "Select a tunnel first.");
+        return;
+    }
+
+    for (int i = 0; i < m_tunnelProfiles.size(); ++i) {
+        if (m_tunnelProfiles[i].id != tunnelId) {
+            continue;
+        }
+        const QString displayName = m_tunnelProfiles[i].name.isEmpty() ? tunnelId : m_tunnelProfiles[i].name;
+        const auto answer = QMessageBox::question(this, "Delete tunnel",
+                                                  QString("Delete tunnel '%1'?").arg(displayName));
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+
+        m_tunnelManager->stopTunnel(tunnelId);
+        m_tunnelProfiles.removeAt(i);
+        refreshTunnelTable();
+        return;
+    }
+
+    QMessageBox::warning(this, "Tunnel", "Selected tunnel was not found.");
+}
+
+void MainWindow::onStartSelectedTunnel() {
+    const QString tunnelId = selectedTunnelId();
+    if (tunnelId.isEmpty()) {
+        QMessageBox::information(this, "Tunnel", "Select a tunnel first.");
+        return;
+    }
+
+    for (const auto& tunnel : m_tunnelProfiles) {
+        if (tunnel.id == tunnelId) {
+            m_tunnelManager->startTunnel(tunnel);
+            return;
+        }
+    }
+
+    QMessageBox::warning(this, "Tunnel", "Selected tunnel was not found.");
+}
+
+void MainWindow::onStopSelectedTunnel() {
+    const QString tunnelId = selectedTunnelId();
+    if (tunnelId.isEmpty()) {
+        QMessageBox::information(this, "Tunnel", "Select a tunnel first.");
+        return;
+    }
+
+    if (!m_tunnelManager->stopTunnel(tunnelId)) {
+        QMessageBox::information(this, "Tunnel", "Tunnel is not active.");
+    }
+    refreshTunnelTable();
 }
 
 void MainWindow::onStopAllTunnels() {
@@ -531,6 +637,7 @@ void MainWindow::onStopAllTunnels() {
     for (const auto& t : active) {
         m_tunnelManager->stopTunnel(t.id);
     }
+    refreshTunnelTable();
     statusBar()->showMessage("Stopped all tunnels", 4000);
 }
 
@@ -571,6 +678,209 @@ QString MainWindow::currentSelectedSessionId() const {
         return m_sessionList->currentItem()->data(Qt::UserRole).toString();
     }
     return {};
+}
+
+QString MainWindow::selectedTunnelId() const {
+    if (m_tunnelTable == nullptr) {
+        return {};
+    }
+    const int row = m_tunnelTable->currentRow();
+    if (row < 0) {
+        return {};
+    }
+    auto* item = m_tunnelTable->item(row, 0);
+    if (item == nullptr) {
+        return {};
+    }
+    return item->data(Qt::UserRole).toString();
+}
+
+void MainWindow::refreshTunnelTable() {
+    if (m_tunnelTable == nullptr) {
+        return;
+    }
+
+    QSet<QString> activeIds;
+    for (const auto& active : m_tunnelManager->activeTunnels()) {
+        activeIds.insert(active.id);
+    }
+
+    const QString currentId = selectedTunnelId();
+    m_tunnelTable->setRowCount(m_tunnelProfiles.size());
+    for (int row = 0; row < m_tunnelProfiles.size(); ++row) {
+        const auto& tunnel = m_tunnelProfiles[row];
+        const QString mode = tunnel.mode.trimmed().toLower();
+        const QString displayName = tunnel.name.isEmpty() ? tunnel.id : tunnel.name;
+        const QString forward = (mode == "dynamic")
+                                    ? QString("%1:%2 -> SOCKS").arg(tunnel.localHost).arg(tunnel.localPort)
+                                    : QString("%1:%2 -> %3:%4")
+                                          .arg(tunnel.localHost)
+                                          .arg(tunnel.localPort)
+                                          .arg(tunnel.remoteHost)
+                                          .arg(tunnel.remotePort);
+        const QString gateway = tunnel.gatewayUser.isEmpty()
+                                    ? QString("%1:%2").arg(tunnel.gatewayHost).arg(tunnel.gatewayPort)
+                                    : QString("%1@%2:%3").arg(tunnel.gatewayUser, tunnel.gatewayHost).arg(tunnel.gatewayPort);
+        const QString status = activeIds.contains(tunnel.id) ? "running" : "stopped";
+
+        auto* nameItem = new QTableWidgetItem(displayName);
+        nameItem->setData(Qt::UserRole, tunnel.id);
+        m_tunnelTable->setItem(row, 0, nameItem);
+        m_tunnelTable->setItem(row, 1, new QTableWidgetItem(mode));
+        m_tunnelTable->setItem(row, 2, new QTableWidgetItem(forward));
+        m_tunnelTable->setItem(row, 3, new QTableWidgetItem(gateway));
+        m_tunnelTable->setItem(row, 4, new QTableWidgetItem(status));
+
+        if (!currentId.isEmpty() && tunnel.id == currentId) {
+            m_tunnelTable->selectRow(row);
+        }
+    }
+}
+
+bool MainWindow::promptTunnelProfile(svy::tunnels::TunnelProfile* tunnel,
+                                     const svy::core::SessionProfile& defaults,
+                                     bool editing) {
+    if (tunnel == nullptr) {
+        return false;
+    }
+
+    svy::tunnels::TunnelProfile draft = *tunnel;
+    if (draft.gatewayHost.isEmpty() && defaults.type == svy::core::SessionType::SSH) {
+        draft.gatewayHost = defaults.host.trimmed();
+    }
+    if (draft.gatewayUser.isEmpty() && defaults.type == svy::core::SessionType::SSH) {
+        draft.gatewayUser = defaults.username.trimmed();
+    }
+    if (draft.gatewayPassword.isEmpty() && defaults.type == svy::core::SessionType::SSH) {
+        draft.gatewayPassword = defaults.password;
+    }
+    if (draft.gatewayPort <= 0) {
+        draft.gatewayPort = 22;
+    }
+    if (draft.localHost.trimmed().isEmpty()) {
+        draft.localHost = "127.0.0.1";
+    }
+    if (draft.localPort <= 0) {
+        draft.localPort = 8080;
+    }
+    if (draft.remoteHost.trimmed().isEmpty()) {
+        draft.remoteHost = "127.0.0.1";
+    }
+    if (draft.remotePort <= 0) {
+        draft.remotePort = 22;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(editing ? "Edit Tunnel" : "New Tunnel");
+    auto* rootLayout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout();
+
+    auto* nameEdit = new QLineEdit(draft.name, &dialog);
+    auto* modeBox = new QComboBox(&dialog);
+    modeBox->addItem("Local", "local");
+    modeBox->addItem("Remote", "remote");
+    modeBox->addItem("Dynamic (SOCKS)", "dynamic");
+    const int modeIndex = std::max(0, modeBox->findData(draft.mode.trimmed().toLower()));
+    modeBox->setCurrentIndex(modeIndex);
+
+    auto* gatewayHostEdit = new QLineEdit(draft.gatewayHost, &dialog);
+    auto* gatewayUserEdit = new QLineEdit(draft.gatewayUser, &dialog);
+    auto* gatewayPortSpin = new QSpinBox(&dialog);
+    gatewayPortSpin->setRange(1, 65535);
+    gatewayPortSpin->setValue(draft.gatewayPort);
+    auto* passwordEdit = new QLineEdit(draft.gatewayPassword, &dialog);
+    passwordEdit->setEchoMode(QLineEdit::Password);
+
+    auto* localHostEdit = new QLineEdit(draft.localHost, &dialog);
+    auto* localPortSpin = new QSpinBox(&dialog);
+    localPortSpin->setRange(1, 65535);
+    localPortSpin->setValue(draft.localPort);
+    auto* remoteHostEdit = new QLineEdit(draft.remoteHost, &dialog);
+    auto* remotePortSpin = new QSpinBox(&dialog);
+    remotePortSpin->setRange(1, 65535);
+    remotePortSpin->setValue(draft.remotePort);
+
+    auto* keyPathEdit = new QLineEdit(draft.privateKeyPath, &dialog);
+    auto* keyPathRow = new QWidget(&dialog);
+    auto* keyPathLayout = new QHBoxLayout(keyPathRow);
+    keyPathLayout->setContentsMargins(0, 0, 0, 0);
+    auto* keyBrowse = new QPushButton("Browse", keyPathRow);
+    keyPathLayout->addWidget(keyPathEdit);
+    keyPathLayout->addWidget(keyBrowse);
+
+    form->addRow("Name", nameEdit);
+    form->addRow("Mode", modeBox);
+    form->addRow("Gateway host", gatewayHostEdit);
+    form->addRow("Gateway user", gatewayUserEdit);
+    form->addRow("Gateway port", gatewayPortSpin);
+    form->addRow("Gateway password", passwordEdit);
+    form->addRow("Local bind host", localHostEdit);
+    form->addRow("Local bind port", localPortSpin);
+    form->addRow("Remote host", remoteHostEdit);
+    form->addRow("Remote port", remotePortSpin);
+    form->addRow("Private key", keyPathRow);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    rootLayout->addLayout(form);
+    rootLayout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(keyBrowse, &QPushButton::clicked, &dialog, [&dialog, keyPathEdit]() {
+        const QString selected = QFileDialog::getOpenFileName(&dialog, "Select private key");
+        if (!selected.isEmpty()) {
+            keyPathEdit->setText(selected);
+        }
+    });
+
+    auto applyModeState = [modeBox, remoteHostEdit, remotePortSpin]() {
+        const bool requiresRemote = modeBox->currentData().toString() != "dynamic";
+        remoteHostEdit->setEnabled(requiresRemote);
+        remotePortSpin->setEnabled(requiresRemote);
+    };
+    connect(modeBox, &QComboBox::currentIndexChanged, &dialog, [applyModeState](int) { applyModeState(); });
+    applyModeState();
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+
+    draft.name = nameEdit->text().trimmed();
+    draft.mode = modeBox->currentData().toString();
+    draft.gatewayHost = gatewayHostEdit->text().trimmed();
+    draft.gatewayUser = gatewayUserEdit->text().trimmed();
+    draft.gatewayPort = gatewayPortSpin->value();
+    draft.gatewayPassword = passwordEdit->text();
+    draft.localHost = localHostEdit->text().trimmed().isEmpty() ? QString("127.0.0.1") : localHostEdit->text().trimmed();
+    draft.localPort = localPortSpin->value();
+    draft.remoteHost = remoteHostEdit->text().trimmed();
+    draft.remotePort = remotePortSpin->value();
+    draft.privateKeyPath = keyPathEdit->text().trimmed();
+
+    if (draft.gatewayHost.isEmpty()) {
+        QMessageBox::warning(this, "Tunnel", "Gateway host is required.");
+        return false;
+    }
+
+    if (draft.mode != "dynamic" && draft.remoteHost.isEmpty()) {
+        QMessageBox::warning(this, "Tunnel", "Remote host is required for local/remote forwarding.");
+        return false;
+    }
+
+    if (draft.name.isEmpty()) {
+        if (draft.mode == "dynamic") {
+            draft.name = QString("SOCKS %1:%2 via %3").arg(draft.localHost).arg(draft.localPort).arg(draft.gatewayHost);
+        } else {
+            draft.name = QString("%1 %2:%3 -> %4:%5")
+                             .arg(draft.mode.toUpper(), draft.localHost)
+                             .arg(draft.localPort)
+                             .arg(draft.remoteHost)
+                             .arg(draft.remotePort);
+        }
+    }
+
+    *tunnel = draft;
+    return true;
 }
 
 void MainWindow::refreshSessionList() {
