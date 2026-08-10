@@ -741,7 +741,13 @@ void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {
         return;
     }
 
+    if (!m_activeSftpSessionId.isEmpty() && m_activeSftpSessionId == profile.id) {
+        onRefreshSftpDirectory();
+        return;
+    }
+
     if (m_sftpClient->connectSession(profile)) {
+        m_activeSftpSessionId = profile.id;
         if (m_sftpPath->text().trimmed().isEmpty() || m_sftpPath->text().trimmed() == ".") {
             m_sftpPath->setText(".");
         }

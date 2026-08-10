@@ -4,7 +4,10 @@
 #include <QFile>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QString>
+
+#include "protocols/CredentialCache.h"
 
 #if SVYTERM_HAS_LIBSSH
 #include <fcntl.h>
@@ -47,6 +50,28 @@ QString buildProxyCommand(const svy::core::SessionProfile& profile) {
         "else exec nc -X 5 -x %1 %%h %%p; fi\"")
                                 .arg(proxyEndpoint, proxyAuth);
     return command;
+}
+
+bool ensureKnownHost(ssh_session session, const svy::core::SessionProfile& profile) {
+    const int state = ssh_session_is_known_server(session);
+    if (state == SSH_KNOWN_HOSTS_OK) {
+        return true;
+    }
+
+    if (state == SSH_KNOWN_HOSTS_UNKNOWN || state == SSH_KNOWN_HOSTS_NOT_FOUND) {
+        const auto answer = QMessageBox::question(
+            nullptr,
+            "SFTP Host Verification",
+            QString("Trust host key for %1:%2?").arg(profile.host).arg(profile.port),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return false;
+        }
+        return ssh_session_update_known_hosts(session) == SSH_OK;
+    }
+
+    return false;
 }
 
 } // namespace
@@ -109,9 +134,22 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
         return false;
     }
 
+    if (!ensureKnownHost(m_sshSession, profile)) {
+        emit errorOccurred("SFTP host key verification failed");
+        ssh_disconnect(m_sshSession);
+        ssh_free(m_sshSession);
+        m_sshSession = nullptr;
+        return false;
+    }
+
+    QString effectivePassword = profile.password;
+    if (effectivePassword.isEmpty()) {
+        effectivePassword = svy::protocols::CredentialCache::getPassword(profile.username, profile.host, profile.port);
+    }
+
     int authResult = ssh_userauth_publickey_auto(m_sshSession, nullptr, nullptr);
-    if (authResult != SSH_AUTH_SUCCESS && !profile.password.isEmpty()) {
-        const QByteArray pass = profile.password.toUtf8();
+    if (authResult != SSH_AUTH_SUCCESS && !effectivePassword.isEmpty()) {
+        const QByteArray pass = effectivePassword.toUtf8();
         authResult = ssh_userauth_password(m_sshSession, nullptr, pass.constData());
     }
     if (authResult != SSH_AUTH_SUCCESS) {
@@ -127,6 +165,7 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
         if (ok && !password.isEmpty()) {
             const QByteArray pass = password.toUtf8();
             authResult = ssh_userauth_password(m_sshSession, nullptr, pass.constData());
+            effectivePassword = password;
         }
 
         if (authResult != SSH_AUTH_SUCCESS) {
@@ -159,6 +198,10 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
 
     m_connected = true;
     m_current = profile;
+    if (!effectivePassword.isEmpty()) {
+        m_current.password = effectivePassword;
+        svy::protocols::CredentialCache::setPassword(profile.username, profile.host, profile.port, effectivePassword);
+    }
     emit info(QString("SFTP connected to %1:%2").arg(profile.host).arg(profile.port));
     return true;
 #endif

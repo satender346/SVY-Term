@@ -5,7 +5,10 @@
 #include <QByteArray>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QString>
+
+#include "protocols/CredentialCache.h"
 
 #if SVYTERM_HAS_LIBSSH
 namespace {
@@ -46,6 +49,38 @@ QString buildProxyCommand(const svy::core::SessionProfile& profile) {
         "else exec nc -X 5 -x %1 %%h %%p; fi\"")
                                 .arg(proxyEndpoint, proxyAuth);
     return command;
+}
+
+bool ensureKnownHost(ssh_session session, const svy::core::SessionProfile& profile) {
+    const int state = ssh_session_is_known_server(session);
+    if (state == SSH_KNOWN_HOSTS_OK) {
+        return true;
+    }
+
+    if (state == SSH_KNOWN_HOSTS_UNKNOWN || state == SSH_KNOWN_HOSTS_NOT_FOUND) {
+        const auto answer = QMessageBox::question(
+            nullptr,
+            "SSH Host Verification",
+            QString("Trust host key for %1:%2?").arg(profile.host).arg(profile.port),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return false;
+        }
+        return ssh_session_update_known_hosts(session) == SSH_OK;
+    }
+
+    return false;
+}
+
+QString buildSudoCommandWithPassword(const QString& command, const QString& password) {
+    QString escaped = password;
+    escaped.replace("\\", "\\\\");
+    escaped.replace("\"", "\\\"");
+    escaped.replace("$", "\\$");
+    escaped.replace("`", "\\`");
+    const QString body = command.mid(4).trimmed();
+    return QString("printf \"%1\\n\" | sudo -S -p '' %2").arg(escaped, body);
 }
 
 } // namespace
@@ -115,9 +150,22 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
         return false;
     }
 
+    if (!ensureKnownHost(m_session, profile)) {
+        emit errorOccurred("Host key verification failed");
+        ssh_disconnect(m_session);
+        ssh_free(m_session);
+        m_session = nullptr;
+        return false;
+    }
+
+    QString effectivePassword = profile.password;
+    if (effectivePassword.isEmpty()) {
+        effectivePassword = svy::protocols::CredentialCache::getPassword(profile.username, profile.host, profile.port);
+    }
+
     int authResult = ssh_userauth_publickey_auto(m_session, nullptr, nullptr);
-    if (authResult != SSH_AUTH_SUCCESS && !profile.password.isEmpty()) {
-        const QByteArray pass = profile.password.toUtf8();
+    if (authResult != SSH_AUTH_SUCCESS && !effectivePassword.isEmpty()) {
+        const QByteArray pass = effectivePassword.toUtf8();
         authResult = ssh_userauth_password(m_session, nullptr, pass.constData());
     }
     if (authResult != SSH_AUTH_SUCCESS) {
@@ -133,6 +181,7 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
         if (ok && !password.isEmpty()) {
             const QByteArray pass = password.toUtf8();
             authResult = ssh_userauth_password(m_session, nullptr, pass.constData());
+            effectivePassword = password;
         }
 
         if (authResult != SSH_AUTH_SUCCESS) {
@@ -145,6 +194,10 @@ bool SshClient::connectSession(const svy::core::SessionProfile& profile) {
     }
 
     m_current = profile;
+    if (!effectivePassword.isEmpty()) {
+        m_current.password = effectivePassword;
+        svy::protocols::CredentialCache::setPassword(profile.username, profile.host, profile.port, effectivePassword);
+    }
     m_connected = true;
     emit outputReceived(QString("Connected to %1@%2:%3")
                             .arg(profile.username, profile.host)
@@ -175,7 +228,37 @@ bool SshClient::execute(const QString& command) {
         return false;
     }
 
-    const QByteArray cmd = command.toUtf8();
+    QString effectiveCommand = command;
+    if (command.startsWith("sudo ")) {
+        QString sudoPassword = m_current.password;
+        if (sudoPassword.isEmpty()) {
+            sudoPassword = svy::protocols::CredentialCache::getPassword(
+                m_current.username, m_current.host, m_current.port);
+        }
+        if (sudoPassword.isEmpty()) {
+            bool ok = false;
+            sudoPassword = QInputDialog::getText(
+                nullptr,
+                "Sudo Password",
+                QString("Sudo password for %1@%2").arg(m_current.username, m_current.host),
+                QLineEdit::Password,
+                QString(),
+                &ok);
+            if (!ok || sudoPassword.isEmpty()) {
+                emit errorOccurred("Sudo command cancelled: password required");
+                ssh_channel_close(channel);
+                ssh_channel_free(channel);
+                return false;
+            }
+            svy::protocols::CredentialCache::setPassword(
+                m_current.username, m_current.host, m_current.port, sudoPassword);
+            m_current.password = sudoPassword;
+        }
+
+        effectiveCommand = buildSudoCommandWithPassword(command, sudoPassword);
+    }
+
+    const QByteArray cmd = effectiveCommand.toUtf8();
     if (ssh_channel_request_exec(channel, cmd.constData()) != SSH_OK) {
         emit errorOccurred(sshError(m_session, "Failed to execute remote command"));
         ssh_channel_close(channel);

@@ -42,6 +42,8 @@ add_executable(SVY-Term
     src/protocols/SshClient.h
     src/protocols/SftpClient.cpp
     src/protocols/SftpClient.h
+    src/protocols/CredentialCache.cpp
+    src/protocols/CredentialCache.h
     src/tunnels/TunnelManager.cpp
     src/tunnels/TunnelManager.h
     src/terminal/TerminalWidget.cpp

@@ -74,6 +74,7 @@ private:
     svy::tunnels::TunnelManager* m_tunnelManager;
     QListWidget* m_sftpList;
     QLineEdit* m_sftpPath;
+    QString m_activeSftpSessionId;
 };
 
 } // namespace svy::ui
