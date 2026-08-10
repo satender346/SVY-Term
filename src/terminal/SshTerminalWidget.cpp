@@ -51,6 +51,13 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
     }
 }
 
+SshTerminalWidget::~SshTerminalWidget() {
+    if (m_client != nullptr) {
+        disconnect(m_client, nullptr, this, nullptr);
+        m_client->blockSignals(true);
+    }
+}
+
 void SshTerminalWidget::runCommand(const QString& command) {
     executeCommand(command, true);
 }
@@ -60,6 +67,9 @@ const svy::core::SessionProfile& SshTerminalWidget::profile() const {
 }
 
 void SshTerminalWidget::adjustFontSize(int delta) {
+    if (m_output.isNull()) {
+        return;
+    }
     QFont f = m_output->font();
     const int current = f.pointSize() > 0 ? f.pointSize() : m_defaultFontSize;
     const int next = qBound(8, current + delta, 36);
@@ -68,12 +78,18 @@ void SshTerminalWidget::adjustFontSize(int delta) {
 }
 
 void SshTerminalWidget::resetFontSize() {
+    if (m_output.isNull()) {
+        return;
+    }
     QFont f = m_output->font();
     f.setPointSize(m_defaultFontSize);
     m_output->setFont(f);
 }
 
 bool SshTerminalWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (m_output.isNull()) {
+        return QWidget::eventFilter(watched, event);
+    }
     if (watched != m_output || event->type() != QEvent::KeyPress) {
         return QWidget::eventFilter(watched, event);
     }
@@ -125,6 +141,9 @@ void SshTerminalWidget::executeCommand(const QString& command, bool echoPromptLi
 }
 
 void SshTerminalWidget::onOutputReceived(const QString& output) {
+    if (m_output.isNull()) {
+        return;
+    }
     append(output);
     if (m_output->toPlainText().endsWith('\n')) {
         insertPrompt();
@@ -132,12 +151,15 @@ void SshTerminalWidget::onOutputReceived(const QString& output) {
 }
 
 void SshTerminalWidget::onError(const QString& message) {
+    if (m_output.isNull()) {
+        return;
+    }
     append(QString("[error] %1").arg(message));
     insertPrompt();
 }
 
 void SshTerminalWidget::append(const QString& line) {
-    if (!line.isEmpty()) {
+    if (!line.isEmpty() && !m_output.isNull()) {
         m_output->moveCursor(QTextCursor::End);
         m_output->insertPlainText(line);
         m_output->moveCursor(QTextCursor::End);
@@ -145,6 +167,9 @@ void SshTerminalWidget::append(const QString& line) {
 }
 
 void SshTerminalWidget::insertPrompt() {
+    if (m_output.isNull()) {
+        return;
+    }
     const QString all = m_output->toPlainText();
     if (!all.isEmpty() && !all.endsWith('\n')) {
         append("\n");
@@ -154,6 +179,9 @@ void SshTerminalWidget::insertPrompt() {
 }
 
 void SshTerminalWidget::onSelectionChanged() {
+    if (m_output.isNull()) {
+        return;
+    }
     const QString selected = m_output->textCursor().selectedText();
     if (!selected.isEmpty()) {
         QApplication::clipboard()->setText(selected);
@@ -161,6 +189,9 @@ void SshTerminalWidget::onSelectionChanged() {
 }
 
 void SshTerminalWidget::showContextMenu(const QPoint& pos) {
+    if (m_output.isNull()) {
+        return;
+    }
     QMenu menu(this);
     QAction* copyAction = menu.addAction("Copy");
     QAction* pasteAction = menu.addAction("Paste");

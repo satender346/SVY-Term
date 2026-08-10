@@ -348,9 +348,6 @@ bool SshClient::execute(const QString& command) {
 }
 
 void SshClient::disconnectSession() {
-    if (m_connected) {
-        emit outputReceived(QString("Disconnected from %1").arg(m_current.host));
-    }
 #if SVYTERM_HAS_LIBSSH
     if (m_shellChannel != nullptr) {
         ssh_channel_send_eof(m_shellChannel);

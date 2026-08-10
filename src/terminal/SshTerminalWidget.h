@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QPointer>
 #include <QWidget>
 
 #include "core/SessionTypes.h"
@@ -20,6 +21,7 @@ class SshTerminalWidget : public QWidget {
 
 public:
     explicit SshTerminalWidget(const svy::core::SessionProfile& profile, QWidget* parent = nullptr);
+    ~SshTerminalWidget() override;
     void runCommand(const QString& command);
     const svy::core::SessionProfile& profile() const;
     void adjustFontSize(int delta);
@@ -39,7 +41,7 @@ private:
     void executeCommand(const QString& command, bool echoPromptLine);
 
     svy::core::SessionProfile m_profile;
-    QPlainTextEdit* m_output;
+    QPointer<QPlainTextEdit> m_output;
     svy::protocols::SshClient* m_client;
     int m_commandStart = 0;
     int m_defaultFontSize = 12;
