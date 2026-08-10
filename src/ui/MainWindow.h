@@ -69,6 +69,7 @@ private:
     void applyFontDeltaToCurrentTab(int delta);
     void resetFontOnCurrentTab();
     void handleLocalSshCommand(const QString& command);
+    void handleSshCommand(const QString& command, const QString& fallbackUsername = QString());
     QString buildRemotePath(const QString& basePath, const QString& entryName) const;
 
     svy::core::SessionManager* m_sessionManager;

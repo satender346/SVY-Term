@@ -124,6 +124,10 @@ svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) 
 
 void MainWindow::createSshTab(const svy::core::SessionProfile& profile) {
     auto* sshTerminal = new svy::terminal::SshTerminalWidget(profile, this);
+    connect(sshTerminal, &svy::terminal::SshTerminalWidget::sshCommandRequested,
+            this, [this, sshTerminal](const QString& command) {
+                handleSshCommand(command, sshTerminal->profile().username);
+            });
     const QString label = profile.host.trimmed().isEmpty()
                               ? (profile.name.isEmpty() ? "SSH" : profile.name)
                               : QString("%1 (%2)").arg(profile.name.isEmpty() ? profile.host : profile.name,
@@ -782,6 +786,10 @@ void MainWindow::resetFontOnCurrentTab() {
 }
 
 void MainWindow::handleLocalSshCommand(const QString& command) {
+    handleSshCommand(command, QString());
+}
+
+void MainWindow::handleSshCommand(const QString& command, const QString& fallbackUsername) {
     // Expected forms: ssh user@host, ssh host, ssh -p 2222 user@host
     QString user;
     QString host;
@@ -817,6 +825,10 @@ void MainWindow::handleLocalSshCommand(const QString& command) {
     if (host.trimmed().isEmpty()) {
         statusBar()->showMessage("Unable to parse SSH target. Use: ssh user@host", 5000);
         return;
+    }
+
+    if (user.trimmed().isEmpty()) {
+        user = fallbackUsername.trimmed();
     }
 
     svy::core::SessionProfile quick = m_sessionManager->createDefaultSshSession();

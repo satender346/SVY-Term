@@ -127,6 +127,16 @@ void SshTerminalWidget::executeCommand(const QString& command, bool echoPromptLi
         return;
     }
 
+    static const QRegularExpression sshCommandPrefix("^ssh\\s+");
+    if (sshCommandPrefix.match(trimmed).hasMatch()) {
+        if (echoPromptLine) {
+            append(QString("$ %1\n").arg(trimmed));
+        }
+        emit sshCommandRequested(trimmed);
+        insertPrompt();
+        return;
+    }
+
     if (isInteractiveShellCommand(trimmed)) {
         append("[info] interactive shell commands are not supported in SSH command mode.\n");
         append("[hint] run direct remote commands, for example: ls, pwd, cat file.txt\n");

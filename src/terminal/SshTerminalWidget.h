@@ -27,6 +27,9 @@ public:
     void adjustFontSize(int delta);
     void resetFontSize();
 
+signals:
+    void sshCommandRequested(const QString& command);
+
 private slots:
     void onOutputReceived(const QString& output);
     void onError(const QString& message);
