@@ -2,10 +2,12 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QElapsedTimer>
 #include <QByteArray>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QUuid>
 #include <QString>
 
 #include "protocols/CredentialCache.h"
@@ -254,7 +256,11 @@ bool SshClient::execute(const QString& command) {
         return false;
     }
 
-    const QByteArray cmd = (command + "\n").toUtf8();
+    const QString marker = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString markerPrefix = QString("__SVY_END_%1__:").arg(marker);
+    const QString payload = QString("%1\nprintf \"%2%s\\n\" \"$?\"\n").arg(command, markerPrefix);
+
+    const QByteArray cmd = payload.toUtf8();
     if (ssh_channel_write(m_shellChannel, cmd.constData(), static_cast<uint32_t>(cmd.size())) == SSH_ERROR) {
         emit errorOccurred(sshError(m_session, "Failed to write to SSH shell"));
         return false;
@@ -264,9 +270,12 @@ bool SshClient::execute(const QString& command) {
     QByteArray stderrData;
     char buffer[4096];
 
-    int idleLoops = 0;
-    const int maxIdleLoops = 8;
-    while (idleLoops < maxIdleLoops && !ssh_channel_is_eof(m_shellChannel)) {
+    QByteArray combined;
+    QElapsedTimer timer;
+    timer.start();
+    const qint64 maxWaitMs = 15000;
+
+    while (timer.elapsed() < maxWaitMs && !ssh_channel_is_eof(m_shellChannel)) {
         bool gotData = false;
 
         int nread = ssh_channel_read_nonblocking(m_shellChannel, buffer, sizeof(buffer), 0);
@@ -276,6 +285,7 @@ bool SshClient::execute(const QString& command) {
         }
         if (nread > 0) {
             stdoutData.append(buffer, nread);
+            combined.append(buffer, nread);
             gotData = true;
         }
 
@@ -286,23 +296,29 @@ bool SshClient::execute(const QString& command) {
         }
         if (nread > 0) {
             stderrData.append(buffer, nread);
+            combined.append(buffer, nread);
             gotData = true;
         }
 
-        if (gotData) {
-            idleLoops = 0;
-        } else {
-            ++idleLoops;
+        if (combined.contains(markerPrefix.toUtf8())) {
+            break;
         }
 
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+
+        if (!gotData) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        }
     }
 
-    if (!stdoutData.isEmpty()) {
-        emit outputReceived(QString::fromUtf8(stdoutData));
+    QString output = QString::fromUtf8(stdoutData) + QString::fromUtf8(stderrData);
+    const int markerPos = output.indexOf(markerPrefix);
+    if (markerPos >= 0) {
+        output = output.left(markerPos);
     }
-    if (!stderrData.isEmpty()) {
-        emit outputReceived(QString::fromUtf8(stderrData));
+
+    if (!output.isEmpty()) {
+        emit outputReceived(output);
     }
 
     return true;
