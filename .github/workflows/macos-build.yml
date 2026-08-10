@@ -31,7 +31,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install aqtinstall==3.1.18
-          python -m aqt install-qt mac desktop "$QT_VERSION" macos -O "$QT_ROOT"
+          QT_ARCH=clang_arm64
+          python -m aqt install-qt mac desktop "$QT_VERSION" "$QT_ARCH" -O "$QT_ROOT" || {
+            QT_ARCH=clang_64
+            python -m aqt install-qt mac desktop "$QT_VERSION" "$QT_ARCH" -O "$QT_ROOT"
+          }
+          echo "Using Qt arch: $QT_ARCH"
+          echo "QT_ARCH=$QT_ARCH" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
