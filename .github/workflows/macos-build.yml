@@ -39,6 +39,14 @@ jobs:
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=2
 
+      - name: Re-sign app bundle (ad-hoc)
+        run: |
+          codesign --force --deep --sign - build/SVY-Term.app
+
+      - name: Verify code signature
+        run: |
+          codesign --verify --deep --strict --verbose=2 build/SVY-Term.app
+
       - name: Package app bundle
         run: |
           cd build
