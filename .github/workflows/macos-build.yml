@@ -14,28 +14,22 @@ permissions:
 jobs:
   build-macos:
     runs-on: macos-latest
-    env:
-      QT_VERSION: 6.8.3
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Qt (no Homebrew)
-        id: qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: desktop
-          arch: ${{ runner.arch == 'ARM64' && 'clang_arm64' || 'clang_64' }}
-          cache: true
+      - name: Install Qt on runner
+        run: |
+          brew update
+          brew install qt
 
       - name: Configure
         run: |
+          QT_PREFIX="$(brew --prefix qt)"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${{ steps.qt.outputs.QT_ROOT_DIR }}" \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DSVYTERM_ENABLE_LIBSSH=OFF
 
       - name: Build
@@ -43,7 +37,7 @@ jobs:
 
       - name: Bundle Qt frameworks
         run: |
-          "${{ steps.qt.outputs.QT_ROOT_DIR }}/bin/macdeployqt" build/SVY-Term.app -verbose=2
+          "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=2
 
       - name: Package app bundle
         run: |
