@@ -1,8 +1,12 @@
 #include "terminal/TerminalWidget.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QTextCursor>
 #include <QVBoxLayout>
 
@@ -15,6 +19,7 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     m_output->setReadOnly(false);
     m_output->setObjectName("terminalOutput");
     m_output->installEventFilter(this);
+    m_output->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -25,6 +30,8 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     connect(m_process, &QProcess::readyReadStandardOutput, this, &TerminalWidget::onReadyReadStdout);
     connect(m_process, &QProcess::readyReadStandardError, this, &TerminalWidget::onReadyReadStderr);
     connect(m_process, &QProcess::stateChanged, this, &TerminalWidget::onProcessStateChanged);
+    connect(m_output, &QPlainTextEdit::selectionChanged, this, &TerminalWidget::onSelectionChanged);
+    connect(m_output, &QPlainTextEdit::customContextMenuRequested, this, &TerminalWidget::showContextMenu);
 
     appendStatus("[ready]");
     insertPrompt();
@@ -76,17 +83,26 @@ void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine)
         return;
     }
 
+    if (isInteractiveShellCommand(trimmed)) {
+        appendStatus("[info] interactive shell commands are not supported in command mode.");
+        appendStatus("[hint] use shell commands directly, or open an SSH session tab for remote shell work.");
+        insertPrompt();
+        return;
+    }
+
     if (m_process->state() != QProcess::NotRunning) {
         appendStatus("[busy] previous command still running");
         insertPrompt();
         return;
     }
 
+    const QString prepared = sanitizeCommand(trimmed);
+
     if (echoPromptLine) {
-        appendOutput(QString("$ %1\n").arg(trimmed));
+        appendOutput(QString("$ %1\n").arg(prepared));
     }
     m_process->setProgram("/bin/zsh");
-    m_process->setArguments({"-lc", trimmed});
+    m_process->setArguments({"-lc", prepared});
     m_process->start();
 }
 
@@ -131,6 +147,55 @@ void TerminalWidget::insertPrompt() {
     }
     appendOutput("$ ");
     m_commandStart = m_output->toPlainText().size();
+}
+
+void TerminalWidget::onSelectionChanged() {
+    const QString selected = m_output->textCursor().selectedText();
+    if (!selected.isEmpty()) {
+        QApplication::clipboard()->setText(selected);
+    }
+}
+
+void TerminalWidget::showContextMenu(const QPoint& pos) {
+    QMenu menu(this);
+    QAction* copyAction = menu.addAction("Copy");
+    QAction* pasteAction = menu.addAction("Paste");
+    copyAction->setEnabled(m_output->textCursor().hasSelection());
+    pasteAction->setEnabled(!QApplication::clipboard()->text().isEmpty());
+
+    QAction* chosen = menu.exec(m_output->mapToGlobal(pos));
+    if (chosen == copyAction) {
+        m_output->copy();
+        return;
+    }
+
+    if (chosen == pasteAction) {
+        QTextCursor cursor = m_output->textCursor();
+        if (cursor.position() < m_commandStart) {
+            cursor.movePosition(QTextCursor::End);
+            m_output->setTextCursor(cursor);
+        }
+        m_output->insertPlainText(QApplication::clipboard()->text());
+        m_output->moveCursor(QTextCursor::End);
+    }
+}
+
+QString TerminalWidget::sanitizeCommand(const QString& command) const {
+    const QString trimmed = command.trimmed();
+
+    // Prevent ssh from asking for a tty in non-terminal stdin mode.
+    static const QRegularExpression sshPrefix("^ssh\\s+");
+    static const QRegularExpression hasTtyOption("(^|\\s)-[A-Za-z]*[tT][A-Za-z]*(\\s|$)|(^|\\s)--tty(\\s|$)|(^|\\s)-T(\\s|$)");
+    if (sshPrefix.match(trimmed).hasMatch() && !hasTtyOption.match(trimmed).hasMatch()) {
+        return QString("ssh -T %1").arg(trimmed.mid(4).trimmed());
+    }
+
+    return trimmed;
+}
+
+bool TerminalWidget::isInteractiveShellCommand(const QString& command) const {
+    static const QRegularExpression interactiveRe("^(bash|zsh|sh|fish)\\b");
+    return interactiveRe.match(command.trimmed()).hasMatch();
 }
 
 } // namespace svy::terminal

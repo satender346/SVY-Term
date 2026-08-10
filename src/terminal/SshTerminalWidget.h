@@ -7,6 +7,7 @@
 
 class QEvent;
 class QPlainTextEdit;
+class QPoint;
 
 namespace svy::protocols {
 class SshClient;
@@ -25,9 +26,12 @@ public:
 private slots:
     void onOutputReceived(const QString& output);
     void onError(const QString& message);
+    void onSelectionChanged();
+    void showContextMenu(const QPoint& pos);
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    bool isInteractiveShellCommand(const QString& command) const;
     void append(const QString& line);
     void insertPrompt();
     void executeCommand(const QString& command, bool echoPromptLine);

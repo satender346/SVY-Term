@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QDockWidget>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -182,16 +183,21 @@ void MainWindow::onEditSelectedSession() {
 }
 
 void MainWindow::onDeleteSelectedSession() {
-    const auto profile = currentSelectedSession();
-    if (profile.id.isEmpty()) {
+    const QString sessionId = currentSelectedSessionId();
+    if (sessionId.isEmpty()) {
         QMessageBox::information(this, "Sessions", "Select a session first.");
         return;
     }
 
+    const auto profile = m_sessionManager->findById(sessionId);
+    const QString displayName = profile.name.isEmpty() ? sessionId : profile.name;
+
     const auto answer = QMessageBox::question(this, "Delete session",
-                                              QString("Delete session '%1'?").arg(profile.name));
+                                              QString("Delete session '%1'?").arg(displayName));
     if (answer == QMessageBox::Yes) {
-        m_sessionManager->removeById(profile.id);
+        if (!m_sessionManager->removeById(sessionId)) {
+            QMessageBox::warning(this, "Delete session", "Unable to delete selected session.");
+        }
     }
 }
 
@@ -269,6 +275,12 @@ void MainWindow::buildMenu() {
     QAction* createTunnel = toolsMenu->addAction("Start SSH tunnel (port forwarding)");
     QAction* stopTunnels = toolsMenu->addAction("Stop all tunnels");
 
+    QMenu* viewMenu = menuBar()->addMenu("View");
+    QMenu* themeMenu = viewMenu->addMenu("Theme");
+    QAction* themeLight = themeMenu->addAction("Light");
+    QAction* themeDark = themeMenu->addAction("Dark");
+    QAction* themeSystem = themeMenu->addAction("System");
+
     connect(newLocal, &QAction::triggered, this, &MainWindow::onAddLocalSession);
     connect(newSsh, &QAction::triggered, this, &MainWindow::onAddSshSession);
     connect(openSelected, &QAction::triggered, this, &MainWindow::onOpenSelectedSession);
@@ -280,6 +292,9 @@ void MainWindow::buildMenu() {
     connect(splitFour, &QAction::triggered, this, &MainWindow::onOpenSplitFour);
     connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
     connect(stopTunnels, &QAction::triggered, this, &MainWindow::onStopAllTunnels);
+    connect(themeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
+    connect(themeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
+    connect(themeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
     connect(quit, &QAction::triggered, this, &MainWindow::close);
 }
 
@@ -409,13 +424,22 @@ void MainWindow::onOpenSplitFour() {
 }
 
 svy::core::SessionProfile MainWindow::currentSelectedSession() const {
-    const auto selected = m_sessionList->selectedItems();
-    if (selected.isEmpty()) {
+    const QString sessionId = currentSelectedSessionId();
+    if (sessionId.isEmpty()) {
         return {};
     }
-
-    const QString sessionId = selected.first()->data(Qt::UserRole).toString();
     return m_sessionManager->findById(sessionId);
+}
+
+QString MainWindow::currentSelectedSessionId() const {
+    const auto selected = m_sessionList->selectedItems();
+    if (!selected.isEmpty()) {
+        return selected.first()->data(Qt::UserRole).toString();
+    }
+    if (m_sessionList->currentItem() != nullptr) {
+        return m_sessionList->currentItem()->data(Qt::UserRole).toString();
+    }
+    return {};
 }
 
 void MainWindow::refreshSessionList() {
@@ -434,6 +458,14 @@ void MainWindow::createSplitTab(int paneCount) {
         return;
     }
 
+    QStringList choices;
+    choices << "Local terminal";
+    for (const auto& session : m_sessionManager->sessions()) {
+        if (session.type == svy::core::SessionType::SSH) {
+            choices << QString("SSH: %1").arg(session.name.isEmpty() ? session.host : session.name);
+        }
+    }
+
     auto* splitWidget = new QWidget(this);
     auto* grid = new QGridLayout(splitWidget);
     grid->setContentsMargins(4, 4, 4, 4);
@@ -441,14 +473,92 @@ void MainWindow::createSplitTab(int paneCount) {
 
     const int columns = paneCount == 2 ? 2 : 2;
     for (int i = 0; i < paneCount; ++i) {
-        auto* term = new svy::terminal::TerminalWidget(splitWidget);
+        bool ok = false;
+        const QString choice = QInputDialog::getItem(
+            this,
+            "Split Pane Session",
+            QString("Pane %1 session").arg(i + 1),
+            choices,
+            0,
+            false,
+            &ok);
+        if (!ok) {
+            delete splitWidget;
+            return;
+        }
+
+        QWidget* pane = createPaneWidgetForChoice(choice, splitWidget);
+        if (pane == nullptr) {
+            pane = new svy::terminal::TerminalWidget(splitWidget);
+        }
+
         const int row = paneCount == 2 ? 0 : (i / columns);
         const int col = i % columns;
-        grid->addWidget(term, row, col);
+        grid->addWidget(pane, row, col);
     }
 
     const int tabIndex = m_tabs->addTab(splitWidget, QString("Split %1").arg(paneCount));
     m_tabs->setCurrentIndex(tabIndex);
+}
+
+QWidget* MainWindow::createPaneWidgetForChoice(const QString& choice, QWidget* parent) {
+    if (choice == "Local terminal") {
+        return new svy::terminal::TerminalWidget(parent);
+    }
+
+    if (!choice.startsWith("SSH: ")) {
+        return nullptr;
+    }
+
+    const QString name = choice.mid(5);
+    for (const auto& session : m_sessionManager->sessions()) {
+        if (session.type != svy::core::SessionType::SSH) {
+            continue;
+        }
+
+        const QString label = session.name.isEmpty() ? session.host : session.name;
+        if (label == name) {
+            return new svy::terminal::SshTerminalWidget(session, parent);
+        }
+    }
+    return nullptr;
+}
+
+void MainWindow::onThemeLight() {
+    applyTheme("light");
+}
+
+void MainWindow::onThemeDark() {
+    applyTheme("dark");
+}
+
+void MainWindow::onThemeSystem() {
+    applyTheme("system");
+}
+
+void MainWindow::applyTheme(const QString& mode) {
+    if (mode == "dark") {
+        qApp->setStyleSheet(
+            "QMainWindow { background: #111827; color: #e5e7eb; }"
+            "QWidget { color: #e5e7eb; }"
+            "QMenuBar, QMenu, QDockWidget, QTabWidget::pane { background: #1f2937; }"
+            "QPlainTextEdit, QListWidget, QLineEdit { background: #0b1220; color: #e5e7eb; border: 1px solid #374151; }"
+            "QPushButton { background: #374151; border: 1px solid #4b5563; padding: 4px 8px; }"
+            "QPushButton:hover { background: #4b5563; }");
+        return;
+    }
+
+    if (mode == "light") {
+        qApp->setStyleSheet(
+            "QMainWindow { background: #f8fafc; color: #0f172a; }"
+            "QMenuBar, QMenu, QDockWidget, QTabWidget::pane { background: #ffffff; }"
+            "QPlainTextEdit, QListWidget, QLineEdit { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }"
+            "QPushButton { background: #e2e8f0; border: 1px solid #cbd5e1; padding: 4px 8px; }"
+            "QPushButton:hover { background: #cbd5e1; }");
+        return;
+    }
+
+    qApp->setStyleSheet(QString());
 }
 
 void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {

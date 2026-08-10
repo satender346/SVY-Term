@@ -7,6 +7,7 @@
 class QEvent;
 class QKeyEvent;
 class QPlainTextEdit;
+class QPoint;
 
 namespace svy::terminal {
 
@@ -26,9 +27,13 @@ private slots:
     void onReadyReadStdout();
     void onReadyReadStderr();
     void onProcessStateChanged(QProcess::ProcessState state);
+    void onSelectionChanged();
+    void showContextMenu(const QPoint& pos);
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    QString sanitizeCommand(const QString& command) const;
+    bool isInteractiveShellCommand(const QString& command) const;
     void appendOutput(const QString& text);
     void appendStatus(const QString& text);
     void insertPrompt();

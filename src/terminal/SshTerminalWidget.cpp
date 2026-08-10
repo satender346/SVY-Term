@@ -1,8 +1,12 @@
 #include "terminal/SshTerminalWidget.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QTextCursor>
 #include <QVBoxLayout>
 
@@ -17,6 +21,7 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
       m_client(new svy::protocols::SshClient(this)) {
         m_output->setReadOnly(false);
         m_output->installEventFilter(this);
+        m_output->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -28,6 +33,8 @@ SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, Q
             this, &SshTerminalWidget::onOutputReceived);
     connect(m_client, &svy::protocols::SshClient::errorOccurred,
             this, &SshTerminalWidget::onError);
+        connect(m_output, &QPlainTextEdit::selectionChanged, this, &SshTerminalWidget::onSelectionChanged);
+        connect(m_output, &QPlainTextEdit::customContextMenuRequested, this, &SshTerminalWidget::showContextMenu);
 
     append(QString("Connecting to %1@%2:%3 ...")
                .arg(m_profile.username, m_profile.host)
@@ -85,6 +92,13 @@ void SshTerminalWidget::executeCommand(const QString& command, bool echoPromptLi
         return;
     }
 
+    if (isInteractiveShellCommand(trimmed)) {
+        append("[info] interactive shell commands are not supported in SSH command mode.\n");
+        append("[hint] run direct remote commands, for example: ls, pwd, cat file.txt\n");
+        insertPrompt();
+        return;
+    }
+
     if (echoPromptLine) {
         append(QString("$ %1\n").arg(trimmed));
     }
@@ -118,6 +132,42 @@ void SshTerminalWidget::insertPrompt() {
     }
     append("$ ");
     m_commandStart = m_output->toPlainText().size();
+}
+
+void SshTerminalWidget::onSelectionChanged() {
+    const QString selected = m_output->textCursor().selectedText();
+    if (!selected.isEmpty()) {
+        QApplication::clipboard()->setText(selected);
+    }
+}
+
+void SshTerminalWidget::showContextMenu(const QPoint& pos) {
+    QMenu menu(this);
+    QAction* copyAction = menu.addAction("Copy");
+    QAction* pasteAction = menu.addAction("Paste");
+    copyAction->setEnabled(m_output->textCursor().hasSelection());
+    pasteAction->setEnabled(!QApplication::clipboard()->text().isEmpty());
+
+    QAction* chosen = menu.exec(m_output->mapToGlobal(pos));
+    if (chosen == copyAction) {
+        m_output->copy();
+        return;
+    }
+
+    if (chosen == pasteAction) {
+        QTextCursor cursor = m_output->textCursor();
+        if (cursor.position() < m_commandStart) {
+            cursor.movePosition(QTextCursor::End);
+            m_output->setTextCursor(cursor);
+        }
+        m_output->insertPlainText(QApplication::clipboard()->text());
+        m_output->moveCursor(QTextCursor::End);
+    }
+}
+
+bool SshTerminalWidget::isInteractiveShellCommand(const QString& command) const {
+    static const QRegularExpression interactiveRe("^(bash|zsh|sh|fish)\\b");
+    return interactiveRe.match(command.trimmed()).hasMatch();
 }
 
 } // namespace svy::terminal

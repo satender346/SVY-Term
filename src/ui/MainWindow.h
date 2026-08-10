@@ -44,15 +44,21 @@ private slots:
     void onStopAllTunnels();
     void onOpenSplitTwo();
     void onOpenSplitFour();
+    void onThemeLight();
+    void onThemeDark();
+    void onThemeSystem();
     void onSessionsChanged();
     void onOpenSelectedSession();
 
 private:
     svy::core::SessionProfile currentSelectedSession() const;
+    QString currentSelectedSessionId() const;
     void buildMenu();
     void refreshSessionList();
     void createSplitTab(int paneCount);
     void bindSftpToSession(const svy::core::SessionProfile& profile);
+    QWidget* createPaneWidgetForChoice(const QString& choice, QWidget* parent);
+    void applyTheme(const QString& mode);
 
     svy::core::SessionManager* m_sessionManager;
     QListWidget* m_sessionList;
