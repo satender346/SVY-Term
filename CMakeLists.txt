@@ -46,8 +46,12 @@ add_executable(SVY-Term
     src/tunnels/TunnelManager.h
     src/terminal/TerminalWidget.cpp
     src/terminal/TerminalWidget.h
+    src/terminal/SshTerminalWidget.cpp
+    src/terminal/SshTerminalWidget.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
+    src/ui/SessionDialog.cpp
+    src/ui/SessionDialog.h
 )
 
 target_include_directories(SVY-Term PRIVATE src)

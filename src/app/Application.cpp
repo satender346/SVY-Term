@@ -59,7 +59,7 @@ int Application::run() {
             profile.name = "SSH quick tab";
             profile.host = "example.com";
             profile.username = "user";
-            m_mainWindow->createSshScaffoldTab(profile);
+            m_mainWindow->createSshTab(profile);
         } else {
             m_mainWindow->createLocalTab("Local");
         }
