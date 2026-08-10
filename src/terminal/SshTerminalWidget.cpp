@@ -14,6 +14,31 @@
 
 namespace svy::terminal {
 
+namespace {
+
+QString normalizeTerminalOutput(const QString& raw) {
+    QString out = raw;
+
+    out.replace("\r\n", "\n");
+    out.replace('\r', '\n');
+
+    // Remove ANSI CSI sequences (colors, cursor moves, bracketed paste toggles, etc.).
+    static const QRegularExpression csiPattern("\\x1B\\[[0-?]*[ -/]*[@-~]");
+    out.remove(csiPattern);
+
+    // Remove OSC sequences.
+    static const QRegularExpression oscPattern("\\x1B\\][^\\x07\\x1B]*(\\x07|\\x1B\\\\)");
+    out.remove(oscPattern);
+
+    // Remove remaining C1/control sequences except newlines and tabs.
+    static const QRegularExpression controlPattern("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]");
+    out.remove(controlPattern);
+
+    return out;
+}
+
+} // namespace
+
 SshTerminalWidget::SshTerminalWidget(const svy::core::SessionProfile& profile, QWidget* parent)
     : QWidget(parent),
       m_profile(profile),
@@ -142,7 +167,7 @@ void SshTerminalWidget::onOutputReceived(const QString& output) {
     if (m_output.isNull()) {
         return;
     }
-    append(output);
+    append(normalizeTerminalOutput(output));
     insertPrompt();
 }
 

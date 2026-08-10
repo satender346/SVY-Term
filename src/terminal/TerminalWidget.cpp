@@ -12,6 +12,28 @@
 
 namespace svy::terminal {
 
+namespace {
+
+QString normalizeTerminalOutput(const QString& raw) {
+    QString out = raw;
+
+    out.replace("\r\n", "\n");
+    out.replace('\r', '\n');
+
+    static const QRegularExpression csiPattern("\\x1B\\[[0-?]*[ -/]*[@-~]");
+    out.remove(csiPattern);
+
+    static const QRegularExpression oscPattern("\\x1B\\][^\\x07\\x1B]*(\\x07|\\x1B\\\\)");
+    out.remove(oscPattern);
+
+    static const QRegularExpression controlPattern("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]");
+    out.remove(controlPattern);
+
+    return out;
+}
+
+} // namespace
+
 TerminalWidget::TerminalWidget(QWidget* parent)
     : QWidget(parent),
       m_output(new QPlainTextEdit(this)),
@@ -134,11 +156,11 @@ void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine)
 }
 
 void TerminalWidget::onReadyReadStdout() {
-    appendOutput(QString::fromUtf8(m_process->readAllStandardOutput()));
+    appendOutput(normalizeTerminalOutput(QString::fromUtf8(m_process->readAllStandardOutput())));
 }
 
 void TerminalWidget::onReadyReadStderr() {
-    appendOutput(QString::fromUtf8(m_process->readAllStandardError()));
+    appendOutput(normalizeTerminalOutput(QString::fromUtf8(m_process->readAllStandardError())));
 }
 
 void TerminalWidget::onProcessStateChanged(QProcess::ProcessState state) {
