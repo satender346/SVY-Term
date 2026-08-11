@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QString>
 #include <QWidget>
 
 #include "core/SessionTypes.h"
@@ -48,6 +49,8 @@ private:
     svy::protocols::SshClient* m_client;
     int m_commandStart = 0;
     int m_defaultFontSize = 12;
+    bool m_passwordInputMode = false;
+    QString m_hiddenInputBuffer;
 };
 
 } // namespace svy::terminal

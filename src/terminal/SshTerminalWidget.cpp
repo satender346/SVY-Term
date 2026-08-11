@@ -116,6 +116,36 @@ bool SshTerminalWidget::eventFilter(QObject* watched, QEvent* event) {
     }
 
     auto* keyEvent = static_cast<QKeyEvent*>(event);
+
+    if (m_passwordInputMode) {
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            append("\n");
+            m_client->execute(m_hiddenInputBuffer);
+            m_hiddenInputBuffer.clear();
+            m_passwordInputMode = false;
+            return true;
+        }
+
+        if (keyEvent->key() == Qt::Key_Backspace) {
+            if (!m_hiddenInputBuffer.isEmpty()) {
+                m_hiddenInputBuffer.chop(1);
+            }
+            return true;
+        }
+
+        if (keyEvent->matches(QKeySequence::Paste)) {
+            m_hiddenInputBuffer += QApplication::clipboard()->text();
+            return true;
+        }
+
+        const QString typed = keyEvent->text();
+        if (!typed.isEmpty() && typed.at(0).isPrint()) {
+            m_hiddenInputBuffer += typed;
+            return true;
+        }
+        return true;
+    }
+
     QTextCursor cursor = m_output->textCursor();
     if (cursor.position() < m_commandStart) {
         cursor.movePosition(QTextCursor::End);
@@ -167,7 +197,17 @@ void SshTerminalWidget::onOutputReceived(const QString& output) {
     if (m_output.isNull()) {
         return;
     }
-    append(normalizeTerminalOutput(output));
+    const QString normalized = normalizeTerminalOutput(output);
+    append(normalized);
+
+    static const QRegularExpression passwordPrompt(
+        "(^|\\n)(\\[sudo\\]\\s*)?(password|passphrase)[^\\n]*:\\s*$",
+        QRegularExpression::CaseInsensitiveOption);
+    if (passwordPrompt.match(normalized).hasMatch()) {
+        m_passwordInputMode = true;
+        m_hiddenInputBuffer.clear();
+    }
+
     insertPrompt();
 }
 
@@ -221,6 +261,10 @@ void SshTerminalWidget::showContextMenu(const QPoint& pos) {
     }
 
     if (chosen == pasteAction) {
+        if (m_passwordInputMode) {
+            m_hiddenInputBuffer += QApplication::clipboard()->text();
+            return;
+        }
         QTextCursor cursor = m_output->textCursor();
         if (cursor.position() < m_commandStart) {
             cursor.movePosition(QTextCursor::End);
