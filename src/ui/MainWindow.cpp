@@ -23,6 +23,7 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -60,12 +61,14 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     m_tabs->setTabsClosable(true);
     setCentralWidget(m_tabs);
 
-    auto* sessionsDock = new QDockWidget("Sessions", this);
-    sessionsDock->setWidget(m_sessionList);
-    sessionsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    addDockWidget(Qt::LeftDockWidgetArea, sessionsDock);
+    m_sessionsDock = new QDockWidget("Sessions", this);
+    m_sessionsDock->setObjectName("sessionsDock");
+    m_sessionsDock->setWidget(m_sessionList);
+    m_sessionsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::LeftDockWidgetArea, m_sessionsDock);
 
-    auto* tunnelsDock = new QDockWidget("SSH Tunnels", this);
+    m_tunnelsDock = new QDockWidget("SSH Tunnels", this);
+    m_tunnelsDock->setObjectName("tunnelsDock");
     auto* tunnelsContainer = new QWidget(this);
     auto* tunnelsLayout = new QVBoxLayout(tunnelsContainer);
     auto* tunnelsButtons = new QHBoxLayout();
@@ -96,29 +99,47 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     tunnelsLayout->addLayout(tunnelsButtons);
     tunnelsLayout->addWidget(m_tunnelTable);
     tunnelsContainer->setLayout(tunnelsLayout);
-    tunnelsDock->setWidget(tunnelsContainer);
-    tunnelsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
-    addDockWidget(Qt::BottomDockWidgetArea, tunnelsDock);
+    m_tunnelsDock->setWidget(tunnelsContainer);
+    m_tunnelsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, m_tunnelsDock);
 
-    auto* sftpDock = new QDockWidget("SFTP Browser", this);
+    m_sftpDock = new QDockWidget("SFTP Browser", this);
+    m_sftpDock->setObjectName("sftpDock");
     auto* sftpContainer = new QWidget(this);
     auto* sftpLayout = new QVBoxLayout(sftpContainer);
     auto* sftpTop = new QHBoxLayout();
-    auto* refreshButton = new QPushButton("Refresh", sftpContainer);
-    auto* uploadButton = new QPushButton("Upload", sftpContainer);
-    auto* downloadButton = new QPushButton("Download", sftpContainer);
-    m_sftpPath->setPlaceholderText("Remote path (example: . or /home/user)");
+    auto* upButton = new QPushButton(sftpContainer);
+    auto* homeButton = new QPushButton(sftpContainer);
+    auto* refreshButton = new QPushButton(sftpContainer);
+    auto* uploadButton = new QPushButton(sftpContainer);
+    auto* downloadButton = new QPushButton(sftpContainer);
+
+    upButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogToParent));
+    upButton->setToolTip("Go up one directory");
+    homeButton->setIcon(style()->standardIcon(QStyle::SP_DirHomeIcon));
+    homeButton->setToolTip("Go to home directory");
+    refreshButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    refreshButton->setToolTip("Refresh listing");
+    uploadButton->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+    uploadButton->setToolTip("Upload file to current directory");
+    downloadButton->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    downloadButton->setToolTip("Download selected file");
+
+    m_sftpPath->setPlaceholderText("Remote path (example: . or /home/user), press Enter to open");
     m_sftpPath->setText(".");
-    sftpTop->addWidget(m_sftpPath);
+    m_sftpPath->setClearButtonEnabled(true);
+    sftpTop->addWidget(upButton);
+    sftpTop->addWidget(homeButton);
+    sftpTop->addWidget(m_sftpPath, 1);
     sftpTop->addWidget(uploadButton);
     sftpTop->addWidget(downloadButton);
     sftpTop->addWidget(refreshButton);
     sftpLayout->addLayout(sftpTop);
     sftpLayout->addWidget(m_sftpList);
     sftpContainer->setLayout(sftpLayout);
-    sftpDock->setWidget(sftpContainer);
-    sftpDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    addDockWidget(Qt::RightDockWidgetArea, sftpDock);
+    m_sftpDock->setWidget(sftpContainer);
+    m_sftpDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::RightDockWidgetArea, m_sftpDock);
 
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget* tab = m_tabs->widget(index);
@@ -138,6 +159,8 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
         onOpenSelectedSession();
     });
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshSftpDirectory);
+    connect(upButton, &QPushButton::clicked, this, &MainWindow::onSftpGoUp);
+    connect(homeButton, &QPushButton::clicked, this, &MainWindow::onSftpGoHome);
     connect(uploadButton, &QPushButton::clicked, this, &MainWindow::onUploadToSftp);
     connect(downloadButton, &QPushButton::clicked, this, &MainWindow::onDownloadFromSftp);
     connect(m_sftpPath, &QLineEdit::returnPressed, this, &MainWindow::onRefreshSftpDirectory);
@@ -173,6 +196,8 @@ svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) 
     auto* terminal = new svy::terminal::TerminalWidget(this);
     connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
             this, &MainWindow::handleLocalSshCommand);
+    connect(terminal, &svy::terminal::TerminalWidget::commandEntered,
+            this, &MainWindow::onTerminalCommandEntered);
     const int tabIndex = m_tabs->addTab(terminal, title);
     m_tabs->setCurrentIndex(tabIndex);
     return terminal;
@@ -184,6 +209,8 @@ void MainWindow::createSshTab(const svy::core::SessionProfile& profile) {
             this, [this, sshTerminal](const QString& command) {
                 handleSshCommand(command, sshTerminal->profile().username);
             });
+    connect(sshTerminal, &svy::terminal::SshTerminalWidget::commandEntered,
+            this, &MainWindow::onTerminalCommandEntered);
     const QString label = profile.host.trimmed().isEmpty()
                               ? (profile.name.isEmpty() ? "SSH" : profile.name)
                               : QString("%1 (%2)").arg(profile.name.isEmpty() ? profile.host : profile.name,
@@ -301,13 +328,46 @@ void MainWindow::onRefreshSftpDirectory() {
     const auto entries = m_sftpClient->listDirectory(path);
 
     m_sftpList->clear();
+    m_sftpList->addItem("../");
     for (const auto& e : entries) {
+        if (e == "./" || e == "../") {
+            continue;
+        }
         m_sftpList->addItem(e);
     }
 
     if (entries.isEmpty()) {
         m_sftpList->addItem("[empty or unavailable]");
     }
+}
+
+void MainWindow::onSftpGoUp() {
+    QString path = m_sftpPath->text().trimmed();
+    if (path.isEmpty() || path == ".") {
+        path = "..";
+    } else if (path == "/") {
+        return;
+    } else {
+        while (path.size() > 1 && path.endsWith('/')) {
+            path.chop(1);
+        }
+        const int lastSlash = path.lastIndexOf('/');
+        if (lastSlash > 0) {
+            path = path.left(lastSlash);
+        } else if (lastSlash == 0) {
+            path = "/";
+        } else {
+            path = "..";
+        }
+    }
+
+    m_sftpPath->setText(path);
+    onRefreshSftpDirectory();
+}
+
+void MainWindow::onSftpGoHome() {
+    m_sftpPath->setText(".");
+    onRefreshSftpDirectory();
 }
 
 void MainWindow::onUploadToSftp() {
@@ -378,6 +438,10 @@ void MainWindow::onSftpItemActivated() {
     }
 
     QString entry = selected.first()->text().trimmed();
+    if (entry == "../") {
+        onSftpGoUp();
+        return;
+    }
     if (!entry.endsWith('/')) {
         return;
     }
@@ -431,7 +495,9 @@ void MainWindow::buildMenu() {
     QAction* openSftp = sessionsMenu->addAction("Open SFTP Browser (Selected SSH)");
 
     QMenu* toolsMenu = menuBar()->addMenu("Tools");
-    QAction* broadcast = toolsMenu->addAction("Multi-exec: Broadcast command");
+    QAction* broadcast = toolsMenu->addAction("Multi-exec: broadcast typing to all tabs");
+    broadcast->setCheckable(true);
+    broadcast->setShortcut(QKeySequence("Ctrl+Shift+B"));
     toolsMenu->addSeparator();
     QAction* splitTwo = toolsMenu->addAction("Split terminals (2 panes)");
     QAction* splitFour = toolsMenu->addAction("Split terminals (4 panes)");
@@ -448,6 +514,11 @@ void MainWindow::buildMenu() {
     QAction* zoomOut = viewMenu->addAction("Zoom Out");
     QAction* zoomReset = viewMenu->addAction("Reset Zoom");
     viewMenu->addSeparator();
+    QMenu* panelsMenu = viewMenu->addMenu("Panels");
+    panelsMenu->addAction(m_sessionsDock->toggleViewAction());
+    panelsMenu->addAction(m_tunnelsDock->toggleViewAction());
+    panelsMenu->addAction(m_sftpDock->toggleViewAction());
+    viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu("Theme");
     QAction* themeLight = themeMenu->addAction("Light");
     QAction* themeDark = themeMenu->addAction("Dark");
@@ -462,7 +533,7 @@ void MainWindow::buildMenu() {
     connect(editSelected, &QAction::triggered, this, &MainWindow::onEditSelectedSession);
     connect(deleteSelected, &QAction::triggered, this, &MainWindow::onDeleteSelectedSession);
     connect(openSftp, &QAction::triggered, this, &MainWindow::onOpenSftpForSelectedSession);
-    connect(broadcast, &QAction::triggered, this, &MainWindow::onBroadcastCommand);
+    connect(broadcast, &QAction::toggled, this, &MainWindow::onToggleBroadcast);
     connect(splitTwo, &QAction::triggered, this, &MainWindow::onOpenSplitTwo);
     connect(splitFour, &QAction::triggered, this, &MainWindow::onOpenSplitFour);
     connect(createTunnel, &QAction::triggered, this, &MainWindow::onCreateTunnel);
@@ -481,22 +552,26 @@ void MainWindow::buildMenu() {
     connect(quit, &QAction::triggered, this, &MainWindow::close);
 }
 
-void MainWindow::onBroadcastCommand() {
-    bool ok = false;
-    const QString command = QInputDialog::getText(
-        this,
-        "Multi-exec",
-        "Command to execute in all open local/SSH tabs:",
-        QLineEdit::Normal,
-        QString(),
-        &ok);
-    if (!ok || command.trimmed().isEmpty()) {
+void MainWindow::onToggleBroadcast(bool enabled) {
+    m_broadcastMode = enabled;
+    statusBar()->showMessage(enabled
+                                 ? "Multi-exec ON: commands typed in a terminal run in all tabs"
+                                 : "Multi-exec OFF",
+                             4000);
+}
+
+void MainWindow::onTerminalCommandEntered(const QString& command) {
+    if (!m_broadcastMode || command.trimmed().isEmpty()) {
         return;
     }
 
+    QObject* origin = sender();
     int count = 0;
     for (int i = 0; i < m_tabs->count(); ++i) {
         QWidget* tab = m_tabs->widget(i);
+        if (tab == origin) {
+            continue;
+        }
         if (auto* local = qobject_cast<svy::terminal::TerminalWidget*>(tab)) {
             local->runCommand(command);
             ++count;
@@ -506,7 +581,9 @@ void MainWindow::onBroadcastCommand() {
         }
     }
 
-    statusBar()->showMessage(QString("Broadcast to %1 tab(s)").arg(count), 4000);
+    if (count > 0) {
+        statusBar()->showMessage(QString("Multi-exec sent to %1 other tab(s)").arg(count), 3000);
+    }
 }
 
 void MainWindow::onCreateTunnel() {
@@ -950,6 +1027,8 @@ QWidget* MainWindow::createPaneWidgetForChoice(const QString& choice, QWidget* p
     auto* terminal = new svy::terminal::TerminalWidget(parent);
     connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
         this, &MainWindow::handleLocalSshCommand);
+    connect(terminal, &svy::terminal::TerminalWidget::commandEntered,
+        this, &MainWindow::onTerminalCommandEntered);
     return terminal;
     }
 

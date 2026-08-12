@@ -5,6 +5,7 @@
 #include "core/SessionManager.h"
 #include "tunnels/TunnelManager.h"
 
+class QDockWidget;
 class QListWidget;
 class QLineEdit;
 class QTableWidget;
@@ -44,7 +45,10 @@ private slots:
     void onUploadToSftp();
     void onDownloadFromSftp();
     void onSftpItemActivated();
-    void onBroadcastCommand();
+    void onSftpGoUp();
+    void onSftpGoHome();
+    void onToggleBroadcast(bool enabled);
+    void onTerminalCommandEntered(const QString& command);
     void onCreateTunnel();
     void onEditSelectedTunnel();
     void onDeleteSelectedTunnel();
@@ -91,8 +95,12 @@ private:
     QTableWidget* m_tunnelTable;
     QListWidget* m_sftpList;
     QLineEdit* m_sftpPath;
+    QDockWidget* m_sessionsDock = nullptr;
+    QDockWidget* m_tunnelsDock = nullptr;
+    QDockWidget* m_sftpDock = nullptr;
     QString m_activeSftpSessionId;
     QVector<svy::tunnels::TunnelProfile> m_tunnelProfiles;
+    bool m_broadcastMode = false;
 };
 
 } // namespace svy::ui

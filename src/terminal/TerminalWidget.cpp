@@ -94,10 +94,70 @@ bool TerminalWidget::eventFilter(QObject* watched, QEvent* event) {
         m_output->setTextCursor(cursor);
     }
 
+    if (keyEvent->matches(QKeySequence::Paste)) {
+        pasteAtCommand(QApplication::clipboard()->text());
+        return true;
+    }
+
+    if (keyEvent->matches(QKeySequence::Copy)) {
+        m_output->copy();
+        return true;
+    }
+
     if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
-        const QString text = m_output->toPlainText();
-        const QString command = text.mid(m_commandStart);
+        const QString command = currentCommandText();
+        if (!command.trimmed().isEmpty()) {
+            m_history.removeAll(command.trimmed());
+            m_history.append(command.trimmed());
+            emit commandEntered(command.trimmed());
+        }
+        m_historyIndex = m_history.size();
         executeCommand(command, false);
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_Up) {
+        recallHistory(-1);
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_Down) {
+        recallHistory(1);
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_Home ||
+        (keyEvent->key() == Qt::Key_A && keyEvent->modifiers().testFlag(Qt::ControlModifier))) {
+        QTextCursor c = m_output->textCursor();
+        c.setPosition(m_commandStart);
+        m_output->setTextCursor(c);
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_E && keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+        m_output->moveCursor(QTextCursor::End);
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_U && keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+        replaceCurrentCommand(QString());
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_L && keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+        m_output->clear();
+        m_commandStart = 0;
+        insertPrompt();
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_C && keyEvent->modifiers().testFlag(Qt::ControlModifier) &&
+        !m_output->textCursor().hasSelection()) {
+        if (m_process->state() != QProcess::NotRunning) {
+            m_process->kill();
+        }
+        appendOutput("^C\n");
+        insertPrompt();
         return true;
     }
 
@@ -110,6 +170,51 @@ bool TerminalWidget::eventFilter(QObject* watched, QEvent* event) {
     }
 
     return QWidget::eventFilter(watched, event);
+}
+
+QString TerminalWidget::currentCommandText() const {
+    return m_output->toPlainText().mid(m_commandStart);
+}
+
+void TerminalWidget::replaceCurrentCommand(const QString& text) {
+    QTextCursor cursor = m_output->textCursor();
+    cursor.setPosition(m_commandStart);
+    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+    cursor.insertText(text);
+    m_output->setTextCursor(cursor);
+    m_output->moveCursor(QTextCursor::End);
+}
+
+void TerminalWidget::pasteAtCommand(const QString& text) {
+    if (text.isEmpty()) {
+        return;
+    }
+    QString sanitized = text;
+    sanitized.replace("\r\n", "\n");
+    sanitized.replace('\r', '\n');
+    if (sanitized.endsWith('\n')) {
+        sanitized.chop(1);
+    }
+    sanitized.replace('\n', ' ');
+
+    QTextCursor cursor = m_output->textCursor();
+    if (cursor.position() < m_commandStart) {
+        cursor.movePosition(QTextCursor::End);
+    }
+    cursor.insertText(sanitized);
+    m_output->setTextCursor(cursor);
+    m_output->moveCursor(QTextCursor::End);
+}
+
+void TerminalWidget::recallHistory(int direction) {
+    if (m_history.isEmpty()) {
+        return;
+    }
+
+    int next = m_historyIndex + direction;
+    next = qBound(0, next, m_history.size());
+    m_historyIndex = next;
+    replaceCurrentCommand(next < m_history.size() ? m_history.at(next) : QString());
 }
 
 void TerminalWidget::executeCommand(const QString& command, bool echoPromptLine) {
@@ -193,8 +298,8 @@ void TerminalWidget::insertPrompt() {
 
 void TerminalWidget::onSelectionChanged() {
     const QString selected = m_output->textCursor().selectedText();
-    if (!selected.isEmpty()) {
-        QApplication::clipboard()->setText(selected);
+    if (!selected.isEmpty() && QApplication::clipboard()->supportsSelection()) {
+        QApplication::clipboard()->setText(selected, QClipboard::Selection);
     }
 }
 
@@ -212,13 +317,7 @@ void TerminalWidget::showContextMenu(const QPoint& pos) {
     }
 
     if (chosen == pasteAction) {
-        QTextCursor cursor = m_output->textCursor();
-        if (cursor.position() < m_commandStart) {
-            cursor.movePosition(QTextCursor::End);
-            m_output->setTextCursor(cursor);
-        }
-        m_output->insertPlainText(QApplication::clipboard()->text());
-        m_output->moveCursor(QTextCursor::End);
+        pasteAtCommand(QApplication::clipboard()->text());
     }
 }
 

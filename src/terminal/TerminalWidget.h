@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QProcess>
+#include <QStringList>
 #include <QWidget>
 
 class QEvent;
@@ -25,6 +26,7 @@ public:
 signals:
     void titleSuggested(const QString& title);
     void sshCommandRequested(const QString& command);
+    void commandEntered(const QString& command);
 
 private slots:
     void onReadyReadStdout();
@@ -41,11 +43,17 @@ private:
     void appendStatus(const QString& text);
     void insertPrompt();
     void executeCommand(const QString& command, bool echoPromptLine);
+    QString currentCommandText() const;
+    void replaceCurrentCommand(const QString& text);
+    void pasteAtCommand(const QString& text);
+    void recallHistory(int direction);
 
     QPlainTextEdit* m_output;
     QProcess* m_process;
     int m_commandStart = 0;
     int m_defaultFontSize = 12;
+    QStringList m_history;
+    int m_historyIndex = 0;
 };
 
 } // namespace svy::terminal

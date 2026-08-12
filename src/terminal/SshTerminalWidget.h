@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include "core/SessionTypes.h"
@@ -30,6 +31,7 @@ public:
 
 signals:
     void sshCommandRequested(const QString& command);
+    void commandEntered(const QString& command);
 
 private slots:
     void onOutputReceived(const QString& output);
@@ -43,6 +45,10 @@ private:
     void append(const QString& line);
     void insertPrompt();
     void executeCommand(const QString& command, bool echoPromptLine);
+    QString currentCommandText() const;
+    void replaceCurrentCommand(const QString& text);
+    void pasteAtCommand(const QString& text);
+    void recallHistory(int direction);
 
     svy::core::SessionProfile m_profile;
     QPointer<QPlainTextEdit> m_output;
@@ -51,6 +57,8 @@ private:
     int m_defaultFontSize = 12;
     bool m_passwordInputMode = false;
     QString m_hiddenInputBuffer;
+    QStringList m_history;
+    int m_historyIndex = 0;
 };
 
 } // namespace svy::terminal
