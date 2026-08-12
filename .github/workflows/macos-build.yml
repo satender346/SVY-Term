@@ -22,12 +22,12 @@ jobs:
       - name: Install Qt on runner
         run: |
           brew update
-          brew install qt libssh
+          brew install qt libssh libvterm
 
       - name: Configure
         run: |
           QT_PREFIX="$(brew --prefix qt)"
-          export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:${PKG_CONFIG_PATH}"
+          export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:$(brew --prefix libvterm)/lib/pkgconfig:${PKG_CONFIG_PATH}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \

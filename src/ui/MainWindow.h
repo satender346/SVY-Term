@@ -48,7 +48,7 @@ private slots:
     void onSftpGoUp();
     void onSftpGoHome();
     void onToggleBroadcast(bool enabled);
-    void onTerminalCommandEntered(const QString& command);
+    void onTerminalInput(const QByteArray& data);
     void onCreateTunnel();
     void onEditSelectedTunnel();
     void onDeleteSelectedTunnel();
@@ -78,8 +78,6 @@ private:
     void applyTheme(const QString& mode);
     void applyFontDeltaToCurrentTab(int delta);
     void resetFontOnCurrentTab();
-    void handleLocalSshCommand(const QString& command);
-    void handleSshCommand(const QString& command, const QString& fallbackUsername = QString());
     QString buildRemotePath(const QString& basePath, const QString& entryName) const;
     void refreshTunnelTable();
     QString selectedTunnelId() const;

@@ -11,6 +11,9 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm)
+
 option(SVYTERM_ENABLE_LIBSSH "Enable libssh backend" ON)
 
 set(SVYTERM_HAS_LIBSSH 0)
@@ -38,14 +41,19 @@ add_executable(SVY-Term
     src/core/SessionManager.h
     src/config/AppConfig.cpp
     src/config/AppConfig.h
-    src/protocols/SshClient.cpp
-    src/protocols/SshClient.h
     src/protocols/SftpClient.cpp
     src/protocols/SftpClient.h
     src/protocols/CredentialCache.cpp
     src/protocols/CredentialCache.h
     src/tunnels/TunnelManager.cpp
     src/tunnels/TunnelManager.h
+    src/terminal/TerminalSession.h
+    src/terminal/PtySession.cpp
+    src/terminal/PtySession.h
+    src/terminal/TerminalView.cpp
+    src/terminal/TerminalView.h
+    src/terminal/TerminalPane.cpp
+    src/terminal/TerminalPane.h
     src/terminal/TerminalWidget.cpp
     src/terminal/TerminalWidget.h
     src/terminal/SshTerminalWidget.cpp
@@ -66,7 +74,12 @@ target_link_libraries(SVY-Term PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
+    PkgConfig::VTERM
 )
+
+if(NOT APPLE)
+    target_link_libraries(SVY-Term PRIVATE util)
+endif()
 
 if(SVYTERM_HAS_LIBSSH)
     target_link_libraries(SVY-Term PRIVATE PkgConfig::LIBSSH)

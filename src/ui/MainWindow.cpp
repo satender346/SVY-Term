@@ -39,6 +39,7 @@
 #include "protocols/CredentialCache.h"
 #include "protocols/SftpClient.h"
 #include "terminal/SshTerminalWidget.h"
+#include "terminal/TerminalPane.h"
 #include "terminal/TerminalWidget.h"
 #include "tunnels/TunnelManager.h"
 #include "ui/SessionDialog.h"
@@ -194,10 +195,8 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
 
 svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) {
     auto* terminal = new svy::terminal::TerminalWidget(this);
-    connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
-            this, &MainWindow::handleLocalSshCommand);
-    connect(terminal, &svy::terminal::TerminalWidget::commandEntered,
-            this, &MainWindow::onTerminalCommandEntered);
+    connect(terminal, &svy::terminal::TerminalWidget::inputProduced,
+            this, &MainWindow::onTerminalInput);
     const int tabIndex = m_tabs->addTab(terminal, title);
     m_tabs->setCurrentIndex(tabIndex);
     return terminal;
@@ -205,12 +204,8 @@ svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) 
 
 void MainWindow::createSshTab(const svy::core::SessionProfile& profile) {
     auto* sshTerminal = new svy::terminal::SshTerminalWidget(profile, this);
-    connect(sshTerminal, &svy::terminal::SshTerminalWidget::sshCommandRequested,
-            this, [this, sshTerminal](const QString& command) {
-                handleSshCommand(command, sshTerminal->profile().username);
-            });
-    connect(sshTerminal, &svy::terminal::SshTerminalWidget::commandEntered,
-            this, &MainWindow::onTerminalCommandEntered);
+    connect(sshTerminal, &svy::terminal::SshTerminalWidget::inputProduced,
+            this, &MainWindow::onTerminalInput);
     const QString label = profile.host.trimmed().isEmpty()
                               ? (profile.name.isEmpty() ? "SSH" : profile.name)
                               : QString("%1 (%2)").arg(profile.name.isEmpty() ? profile.host : profile.name,
@@ -560,29 +555,20 @@ void MainWindow::onToggleBroadcast(bool enabled) {
                              4000);
 }
 
-void MainWindow::onTerminalCommandEntered(const QString& command) {
-    if (!m_broadcastMode || command.trimmed().isEmpty()) {
+void MainWindow::onTerminalInput(const QByteArray& data) {
+    if (!m_broadcastMode || data.isEmpty()) {
         return;
     }
 
     QObject* origin = sender();
-    int count = 0;
     for (int i = 0; i < m_tabs->count(); ++i) {
         QWidget* tab = m_tabs->widget(i);
         if (tab == origin) {
             continue;
         }
-        if (auto* local = qobject_cast<svy::terminal::TerminalWidget*>(tab)) {
-            local->runCommand(command);
-            ++count;
-        } else if (auto* ssh = qobject_cast<svy::terminal::SshTerminalWidget*>(tab)) {
-            ssh->runCommand(command);
-            ++count;
+        if (auto* pane = qobject_cast<svy::terminal::TerminalPane*>(tab)) {
+            pane->writeInput(data);
         }
-    }
-
-    if (count > 0) {
-        statusBar()->showMessage(QString("Multi-exec sent to %1 other tab(s)").arg(count), 3000);
     }
 }
 
@@ -1008,8 +994,8 @@ void MainWindow::createSplitTab(int paneCount) {
         QWidget* pane = createPaneWidgetForChoice(choice, splitWidget);
         if (pane == nullptr) {
             auto* localFallback = new svy::terminal::TerminalWidget(splitWidget);
-            connect(localFallback, &svy::terminal::TerminalWidget::sshCommandRequested,
-                    this, &MainWindow::handleLocalSshCommand);
+            connect(localFallback, &svy::terminal::TerminalWidget::inputProduced,
+                    this, &MainWindow::onTerminalInput);
             pane = localFallback;
         }
 
@@ -1025,10 +1011,8 @@ void MainWindow::createSplitTab(int paneCount) {
 QWidget* MainWindow::createPaneWidgetForChoice(const QString& choice, QWidget* parent) {
     if (choice == "Local terminal") {
     auto* terminal = new svy::terminal::TerminalWidget(parent);
-    connect(terminal, &svy::terminal::TerminalWidget::sshCommandRequested,
-        this, &MainWindow::handleLocalSshCommand);
-    connect(terminal, &svy::terminal::TerminalWidget::commandEntered,
-        this, &MainWindow::onTerminalCommandEntered);
+    connect(terminal, &svy::terminal::TerminalWidget::inputProduced,
+        this, &MainWindow::onTerminalInput);
     return terminal;
     }
 
@@ -1172,63 +1156,6 @@ void MainWindow::resetFontOnCurrentTab() {
     for (auto* term : sshChildren) {
         term->resetFontSize();
     }
-}
-
-void MainWindow::handleLocalSshCommand(const QString& command) {
-    handleSshCommand(command, QString());
-}
-
-void MainWindow::handleSshCommand(const QString& command, const QString& fallbackUsername) {
-    // Expected forms: ssh user@host, ssh host, ssh -p 2222 user@host
-    QString user;
-    QString host;
-    int port = 22;
-
-    const QStringList parts = command.simplified().split(' ', Qt::SkipEmptyParts);
-    for (int i = 1; i < parts.size(); ++i) {
-        const QString token = parts.at(i);
-        if (token == "-p" && i + 1 < parts.size()) {
-            bool ok = false;
-            const int parsedPort = parts.at(i + 1).toInt(&ok);
-            if (ok && parsedPort > 0) {
-                port = parsedPort;
-            }
-            ++i;
-            continue;
-        }
-        if (token.startsWith('-')) {
-            continue;
-        }
-        if (token.contains('@')) {
-            const QStringList uh = token.split('@');
-            if (uh.size() == 2) {
-                user = uh.at(0);
-                host = uh.at(1);
-            }
-        } else {
-            host = token;
-        }
-        break;
-    }
-
-    if (host.trimmed().isEmpty()) {
-        statusBar()->showMessage("Unable to parse SSH target. Use: ssh user@host", 5000);
-        return;
-    }
-
-    if (user.trimmed().isEmpty()) {
-        user = fallbackUsername.trimmed();
-    }
-
-    svy::core::SessionProfile quick = m_sessionManager->createDefaultSshSession();
-    quick.name = host.trimmed();
-    quick.host = host.trimmed();
-    quick.port = port;
-    quick.username = user.trimmed();
-    quick.type = svy::core::SessionType::SSH;
-
-    createSshTab(quick);
-    statusBar()->showMessage("Opened internal SSH tab for interactive login.", 5000);
 }
 
 QString MainWindow::buildRemotePath(const QString& basePath, const QString& entryName) const {
