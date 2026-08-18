@@ -13,6 +13,8 @@
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPalette>
@@ -24,8 +26,12 @@
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QStyle>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -35,8 +41,10 @@
 #include <QRegularExpression>
 #include <QSysInfo>
 
+#include "config/AppConfig.h"
 #include "core/SessionTypes.h"
 #include "protocols/CredentialCache.h"
+#include "protocols/CredentialManager.h"
 #include "protocols/SftpClient.h"
 #include "terminal/SshTerminalWidget.h"
 #include "terminal/TerminalPane.h"
@@ -49,7 +57,8 @@ namespace svy::ui {
 MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* parent)
     : QMainWindow(parent),
       m_sessionManager(sessionManager),
-      m_sessionList(new QListWidget(this)),
+      m_sessionTree(new QTreeWidget(this)),
+      m_sessionFilter(new QLineEdit(this)),
             m_tabs(new QTabWidget(this)),
             m_sftpClient(new svy::protocols::SftpClient(this)),
             m_tunnelManager(new svy::tunnels::TunnelManager(this)),
@@ -64,9 +73,43 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
 
     m_sessionsDock = new QDockWidget("Sessions", this);
     m_sessionsDock->setObjectName("sessionsDock");
-    m_sessionsDock->setWidget(m_sessionList);
+
+    auto* sessionsContainer = new QWidget(this);
+    auto* sessionsLayout = new QVBoxLayout(sessionsContainer);
+    sessionsLayout->setContentsMargins(4, 4, 4, 4);
+    m_sessionFilter->setPlaceholderText("Search sessions...");
+    m_sessionFilter->setClearButtonEnabled(true);
+
+    m_sessionTree->setHeaderHidden(true);
+    m_sessionTree->setColumnCount(1);
+    m_sessionTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_sessionTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_sessionTree->setDragDropMode(QAbstractItemView::InternalMove);
+    m_sessionTree->setDragEnabled(true);
+    m_sessionTree->viewport()->setAcceptDrops(true);
+    m_sessionTree->setDropIndicatorShown(true);
+    m_sessionTree->setExpandsOnDoubleClick(false);
+
+    auto* sessionButtons = new QHBoxLayout();
+    auto* newSessionButton = new QPushButton("+ Session", sessionsContainer);
+    auto* newFolderButton = new QPushButton("+ Folder", sessionsContainer);
+    sessionButtons->addWidget(newSessionButton);
+    sessionButtons->addWidget(newFolderButton);
+
+    sessionsLayout->addWidget(m_sessionFilter);
+    sessionsLayout->addWidget(m_sessionTree, 1);
+    sessionsLayout->addLayout(sessionButtons);
+    sessionsContainer->setLayout(sessionsLayout);
+
+    m_sessionsDock->setWidget(sessionsContainer);
     m_sessionsDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::LeftDockWidgetArea, m_sessionsDock);
+
+    connect(newSessionButton, &QPushButton::clicked, this, &MainWindow::onAddSshSession);
+    connect(newFolderButton, &QPushButton::clicked, this, &MainWindow::onNewFolder);
+    connect(m_sessionFilter, &QLineEdit::textChanged, this, &MainWindow::onSessionFilterChanged);
+    connect(m_sessionTree, &QTreeWidget::customContextMenuRequested,
+            this, &MainWindow::onSessionContextMenu);
 
     m_tunnelsDock = new QDockWidget("SSH Tunnels", this);
     m_tunnelsDock->setObjectName("tunnelsDock");
@@ -156,9 +199,32 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
 
     connect(m_sessionManager, &svy::core::SessionManager::sessionsChanged,
             this, &MainWindow::onSessionsChanged);
-    connect(m_sessionList, &QListWidget::itemDoubleClicked, this, [this]() {
+    connect(m_sessionTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
+        if (item != nullptr && item->data(0, Qt::UserRole).toString().isEmpty()) {
+            item->setExpanded(!item->isExpanded());
+            return;
+        }
         onOpenSelectedSession();
     });
+    connect(m_sessionTree->model(), &QAbstractItemModel::rowsInserted, this,
+            [this](const QModelIndex& parent, int first, int) {
+                // Drag-and-drop moves rewrite the owning folder.
+                QTreeWidgetItem* parentItem = m_sessionTree->itemFromIndex(parent);
+                QTreeWidgetItem* moved = parentItem == nullptr
+                                             ? m_sessionTree->topLevelItem(first)
+                                             : parentItem->child(first);
+                if (moved == nullptr) {
+                    return;
+                }
+                const QString sessionId = moved->data(0, Qt::UserRole).toString();
+                if (sessionId.isEmpty()) {
+                    return;
+                }
+                const QString folder = parentItem == nullptr
+                                           ? QString()
+                                           : parentItem->data(0, Qt::UserRole + 1).toString();
+                m_sessionManager->moveSessionToFolder(sessionId, folder);
+            });
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshSftpDirectory);
     connect(upButton, &QPushButton::clicked, this, &MainWindow::onSftpGoUp);
     connect(homeButton, &QPushButton::clicked, this, &MainWindow::onSftpGoHome);
@@ -190,7 +256,25 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
 
     buildMenu();
     refreshSessionList();
-        refreshTunnelTable();
+
+    // Load persisted tunnel profiles.
+    const QJsonArray savedTunnels = m_sessionManager->config()->loadTunnels();
+    for (const auto& item : savedTunnels) {
+        auto tunnel = svy::tunnels::TunnelProfile::fromJson(item.toObject());
+        if (!tunnel.id.isEmpty()) {
+            // Resolve gateway password from Keychain if available.
+            if (!tunnel.credentialRef.isEmpty()) {
+                tunnel.gatewayPassword = svy::protocols::CredentialManager::retrieve(tunnel.credentialRef);
+            }
+            m_tunnelProfiles.push_back(tunnel);
+        }
+    }
+    refreshTunnelTable();
+
+    const QHash<QString, bool> uiState = m_sessionManager->config()->loadUiState();
+    m_sftpDock->setVisible(uiState.value("sftpVisible", false));
+    m_tunnelsDock->setVisible(uiState.value("tunnelsVisible", false));
+    m_sessionsDock->setVisible(uiState.value("sessionsVisible", true));
 }
 
 svy::terminal::TerminalWidget* MainWindow::createLocalTab(const QString& title) {
@@ -253,6 +337,11 @@ void MainWindow::onAddSshSession() {
     profile.type = svy::core::SessionType::SSH;
 
     if (m_sessionManager->upsert(profile)) {
+        // Store password in Keychain if the user entered one and checked remember.
+        const QString pw = dialog.enteredPassword();
+        if (!pw.isEmpty() && dialog.rememberCredentials()) {
+            m_sessionManager->rememberPassword(profile, pw);
+        }
         createSshTab(profile);
     }
 }
@@ -273,6 +362,7 @@ void MainWindow::onEditSelectedSession() {
 
     auto updated = dialog.profile();
     updated.id = profile.id;
+    updated.credentialRef = profile.credentialRef; // preserve existing Keychain ref
     if (updated.name.isEmpty()) {
         updated.name = profile.name;
     }
@@ -281,6 +371,12 @@ void MainWindow::onEditSelectedSession() {
     }
 
     m_sessionManager->upsert(updated);
+
+    // Update Keychain if a new password was entered.
+    const QString pw = dialog.enteredPassword();
+    if (!pw.isEmpty() && dialog.rememberCredentials()) {
+        m_sessionManager->rememberPassword(updated, pw);
+    }
 }
 
 void MainWindow::onDeleteSelectedSession() {
@@ -293,11 +389,17 @@ void MainWindow::onDeleteSelectedSession() {
     const auto profile = m_sessionManager->findById(sessionId);
     const QString displayName = profile.name.isEmpty() ? sessionId : profile.name;
 
-    const auto answer = QMessageBox::question(this, "Delete session",
-                                              QString("Delete session '%1'?").arg(displayName));
-    if (answer == QMessageBox::Yes) {
+    QMessageBox box(this);
+    box.setWindowTitle("Delete Session?");
+    box.setText(QString("Are you sure you want to delete \"%1\"?").arg(displayName));
+    QPushButton* deleteBtn = box.addButton("Delete", QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+
+    if (box.clickedButton() == deleteBtn) {
         if (!m_sessionManager->removeById(sessionId)) {
-            QMessageBox::warning(this, "Delete session", "Unable to delete selected session.");
+            QMessageBox::warning(this, "Delete Session", "Unable to delete selected session.");
         }
     }
 }
@@ -453,12 +555,11 @@ void MainWindow::onSessionsChanged() {
 }
 
 void MainWindow::onOpenSelectedSession() {
-    const auto selected = m_sessionList->selectedItems();
-    if (selected.isEmpty()) {
+    const QString sessionId = currentSelectedSessionId();
+    if (sessionId.isEmpty()) {
         return;
     }
 
-    const QString sessionId = selected.first()->data(Qt::UserRole).toString();
     const svy::core::SessionProfile profile = m_sessionManager->findById(sessionId);
 
     if (profile.id.isEmpty()) {
@@ -478,14 +579,29 @@ void MainWindow::onOpenSelectedSession() {
 void MainWindow::buildMenu() {
     QMenu* fileMenu = menuBar()->addMenu("File");
     QAction* newLocal = fileMenu->addAction("New Local Tab");
+    newLocal->setShortcut(QKeySequence("Ctrl+T"));
     QAction* newSsh = fileMenu->addAction("New SSH Session");
+    newSsh->setShortcut(QKeySequence("Ctrl+N"));
+    fileMenu->addSeparator();
+    QAction* closeTab = fileMenu->addAction("Close Current Tab");
+    closeTab->setShortcut(QKeySequence("Ctrl+W"));
     fileMenu->addSeparator();
     QAction* quit = fileMenu->addAction("Quit");
 
     QMenu* sessionsMenu = menuBar()->addMenu("Sessions");
     QAction* openSelected = sessionsMenu->addAction("Open Selected Session");
     QAction* editSelected = sessionsMenu->addAction("Edit Selected Session");
+    QAction* renameSelected = sessionsMenu->addAction("Rename Selected Session");
+    QAction* duplicateSelected = sessionsMenu->addAction("Duplicate Selected Session");
     QAction* deleteSelected = sessionsMenu->addAction("Delete Selected Session");
+    sessionsMenu->addSeparator();
+    QAction* newFolder = sessionsMenu->addAction("New Folder");
+    newFolder->setShortcut(QKeySequence("Ctrl+Shift+N"));
+    QAction* moveToFolder = sessionsMenu->addAction("Move Session to Folder...");
+    QAction* searchSessions = sessionsMenu->addAction("Search Sessions");
+    searchSessions->setShortcut(QKeySequence("Ctrl+K"));
+    sessionsMenu->addSeparator();
+    QAction* forgetPassword = sessionsMenu->addAction("Forget Saved Password");
     sessionsMenu->addSeparator();
     QAction* openSftp = sessionsMenu->addAction("Open SFTP Browser (Selected SSH)");
 
@@ -510,9 +626,12 @@ void MainWindow::buildMenu() {
     QAction* zoomReset = viewMenu->addAction("Reset Zoom");
     viewMenu->addSeparator();
     QMenu* panelsMenu = viewMenu->addMenu("Panels");
+    QAction* toggleSftp = panelsMenu->addAction("SFTP Browser");
+    toggleSftp->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    QAction* toggleTunnels = panelsMenu->addAction("SSH Tunnels");
+    toggleTunnels->setShortcut(QKeySequence("Ctrl+Shift+T"));
+    panelsMenu->addSeparator();
     panelsMenu->addAction(m_sessionsDock->toggleViewAction());
-    panelsMenu->addAction(m_tunnelsDock->toggleViewAction());
-    panelsMenu->addAction(m_sftpDock->toggleViewAction());
     viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu("Theme");
     QAction* themeLight = themeMenu->addAction("Light");
@@ -524,9 +643,25 @@ void MainWindow::buildMenu() {
 
     connect(newLocal, &QAction::triggered, this, &MainWindow::onAddLocalSession);
     connect(newSsh, &QAction::triggered, this, &MainWindow::onAddSshSession);
+    connect(closeTab, &QAction::triggered, this, [this]() {
+        const int idx = m_tabs->currentIndex();
+        if (idx >= 0) {
+            QWidget* tab = m_tabs->widget(idx);
+            m_tabs->removeTab(idx);
+            delete tab;
+        }
+    });
     connect(openSelected, &QAction::triggered, this, &MainWindow::onOpenSelectedSession);
     connect(editSelected, &QAction::triggered, this, &MainWindow::onEditSelectedSession);
+    connect(renameSelected, &QAction::triggered, this, &MainWindow::onRenameSelectedSession);
+    connect(duplicateSelected, &QAction::triggered, this, &MainWindow::onDuplicateSelectedSession);
     connect(deleteSelected, &QAction::triggered, this, &MainWindow::onDeleteSelectedSession);
+    connect(newFolder, &QAction::triggered, this, &MainWindow::onNewFolder);
+    connect(moveToFolder, &QAction::triggered, this, &MainWindow::onMoveSessionToFolder);
+    connect(searchSessions, &QAction::triggered, this, &MainWindow::onFocusSessionSearch);
+    connect(forgetPassword, &QAction::triggered, this, &MainWindow::onForgetSelectedPassword);
+    connect(toggleSftp, &QAction::triggered, this, &MainWindow::onToggleSftpPanel);
+    connect(toggleTunnels, &QAction::triggered, this, &MainWindow::onToggleTunnelPanel);
     connect(openSftp, &QAction::triggered, this, &MainWindow::onOpenSftpForSelectedSession);
     connect(broadcast, &QAction::toggled, this, &MainWindow::onToggleBroadcast);
     connect(splitTwo, &QAction::triggered, this, &MainWindow::onOpenSplitTwo);
@@ -584,11 +719,13 @@ void MainWindow::onCreateTunnel() {
         draft.gatewayHost = selected.host.trimmed();
         draft.gatewayUser = selected.username.trimmed();
         draft.privateKeyPath = selected.privateKeyPath;
-        draft.gatewayPassword = selected.password;
+        // Resolve password from Keychain — never read from profile.password directly.
+        draft.gatewayPassword = m_sessionManager->resolvePassword(selected);
         if (draft.gatewayPassword.isEmpty()) {
             draft.gatewayPassword = svy::protocols::CredentialCache::getPassword(
                 selected.username, selected.host, selected.port);
         }
+        draft.credentialRef = selected.credentialRef;
     }
 
     if (!promptTunnelProfile(&draft, selected, false)) {
@@ -596,6 +733,7 @@ void MainWindow::onCreateTunnel() {
     }
 
     m_tunnelProfiles.push_back(draft);
+    persistTunnels();
     refreshTunnelTable();
     m_tunnelManager->startTunnel(draft);
 }
@@ -629,6 +767,7 @@ void MainWindow::onEditSelectedTunnel() {
 
         m_tunnelProfiles[i] = edited;
         refreshTunnelTable();
+        persistTunnels();
         if (wasActive) {
             m_tunnelManager->startTunnel(edited);
         }
@@ -658,6 +797,7 @@ void MainWindow::onDeleteSelectedTunnel() {
 
         m_tunnelManager->stopTunnel(tunnelId);
         m_tunnelProfiles.removeAt(i);
+        persistTunnels();
         refreshTunnelTable();
         return;
     }
@@ -733,14 +873,24 @@ svy::core::SessionProfile MainWindow::currentSelectedSession() const {
 }
 
 QString MainWindow::currentSelectedSessionId() const {
-    const auto selected = m_sessionList->selectedItems();
-    if (!selected.isEmpty()) {
-        return selected.first()->data(Qt::UserRole).toString();
+    QTreeWidgetItem* item = m_sessionTree->currentItem();
+    if (item == nullptr) {
+        return {};
     }
-    if (m_sessionList->currentItem() != nullptr) {
-        return m_sessionList->currentItem()->data(Qt::UserRole).toString();
+    return item->data(0, Qt::UserRole).toString();
+}
+
+QString MainWindow::currentSelectedFolder() const {
+    QTreeWidgetItem* item = m_sessionTree->currentItem();
+    if (item == nullptr) {
+        return {};
     }
-    return {};
+
+    if (item->data(0, Qt::UserRole).toString().isEmpty()) {
+        return item->data(0, Qt::UserRole + 1).toString();
+    }
+    QTreeWidgetItem* parent = item->parent();
+    return parent == nullptr ? QString() : parent->data(0, Qt::UserRole + 1).toString();
 }
 
 QString MainWindow::selectedTunnelId() const {
@@ -947,14 +1097,306 @@ bool MainWindow::promptTunnelProfile(svy::tunnels::TunnelProfile* tunnel,
 }
 
 void MainWindow::refreshSessionList() {
-    m_sessionList->clear();
+    const QString previousSelection = currentSelectedSessionId();
+
+    QSignalBlocker blocker(m_sessionTree->model());
+    m_sessionTree->clear();
+
+    QHash<QString, QTreeWidgetItem*> folderItems;
+    const QStringList folders = m_sessionManager->folders();
+
+    for (const QString& folder : folders) {
+        const QStringList parts = folder.split('/', Qt::SkipEmptyParts);
+        QString accumulated;
+        QTreeWidgetItem* parent = nullptr;
+
+        for (const QString& part : parts) {
+            accumulated = accumulated.isEmpty() ? part : accumulated + "/" + part;
+            if (folderItems.contains(accumulated)) {
+                parent = folderItems.value(accumulated);
+                continue;
+            }
+
+            auto* item = parent == nullptr ? new QTreeWidgetItem(m_sessionTree)
+                                           : new QTreeWidgetItem(parent);
+            item->setText(0, part);
+            item->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
+            item->setData(0, Qt::UserRole, QString());
+            item->setData(0, Qt::UserRole + 1, accumulated);
+            item->setFlags((item->flags() | Qt::ItemIsDropEnabled) & ~Qt::ItemIsDragEnabled);
+            item->setExpanded(true);
+            folderItems.insert(accumulated, item);
+            parent = item;
+        }
+    }
 
     for (const auto& session : m_sessionManager->sessions()) {
-        auto* item = new QListWidgetItem(
-            QString("%1 [%2]").arg(session.name, svy::core::sessionTypeToString(session.type)),
-            m_sessionList);
-        item->setData(Qt::UserRole, session.id);
+        QTreeWidgetItem* parent = folderItems.value(session.folderPath, nullptr);
+        auto* item = parent == nullptr ? new QTreeWidgetItem(m_sessionTree)
+                                       : new QTreeWidgetItem(parent);
+
+        const QString label = session.name.isEmpty() ? session.host : session.name;
+        item->setText(0, label);
+        item->setData(0, Qt::UserRole, session.id);
+        item->setFlags((item->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
+
+        if (session.type == svy::core::SessionType::SSH && !session.host.isEmpty()) {
+            const QString detail = session.username.isEmpty()
+                                       ? session.host
+                                       : QString("%1@%2").arg(session.username, session.host);
+            item->setToolTip(0, detail);
+        }
     }
+
+    m_sessionTree->expandAll();
+    updateConnectionIndicators();
+    applySessionFilter();
+
+    if (!previousSelection.isEmpty()) {
+        for (QTreeWidgetItemIterator it(m_sessionTree); *it != nullptr; ++it) {
+            if ((*it)->data(0, Qt::UserRole).toString() == previousSelection) {
+                m_sessionTree->setCurrentItem(*it);
+                break;
+            }
+        }
+    }
+}
+
+void MainWindow::updateConnectionIndicators() {
+    QSet<QString> openSessionIds;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (auto* ssh = qobject_cast<svy::terminal::SshTerminalWidget*>(m_tabs->widget(i))) {
+            openSessionIds.insert(ssh->profile().id);
+        }
+    }
+
+    for (QTreeWidgetItemIterator it(m_sessionTree); *it != nullptr; ++it) {
+        const QString sessionId = (*it)->data(0, Qt::UserRole).toString();
+        if (sessionId.isEmpty()) {
+            continue;
+        }
+        const bool connected = openSessionIds.contains(sessionId);
+        (*it)->setIcon(0, style()->standardIcon(connected ? QStyle::SP_DialogApplyButton
+                                                          : QStyle::SP_ComputerIcon));
+    }
+}
+
+void MainWindow::applySessionFilter() {
+    const QString needle = m_sessionFilter->text().trimmed();
+
+    for (QTreeWidgetItemIterator it(m_sessionTree); *it != nullptr; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (item->data(0, Qt::UserRole).toString().isEmpty()) {
+            continue;
+        }
+        const bool matches = needle.isEmpty() ||
+                             item->text(0).contains(needle, Qt::CaseInsensitive) ||
+                             item->toolTip(0).contains(needle, Qt::CaseInsensitive);
+        item->setHidden(!matches);
+    }
+
+    for (QTreeWidgetItemIterator it(m_sessionTree); *it != nullptr; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (!item->data(0, Qt::UserRole).toString().isEmpty()) {
+            continue;
+        }
+        bool anyVisibleChild = false;
+        for (int i = 0; i < item->childCount(); ++i) {
+            if (!item->child(i)->isHidden()) {
+                anyVisibleChild = true;
+                break;
+            }
+        }
+        item->setHidden(!needle.isEmpty() && !anyVisibleChild);
+    }
+}
+
+void MainWindow::onSessionFilterChanged(const QString&) {
+    applySessionFilter();
+}
+
+void MainWindow::onFocusSessionSearch() {
+    m_sessionsDock->show();
+    m_sessionFilter->setFocus();
+    m_sessionFilter->selectAll();
+}
+
+void MainWindow::onSessionContextMenu(const QPoint& position) {
+    QTreeWidgetItem* item = m_sessionTree->itemAt(position);
+    if (item != nullptr) {
+        m_sessionTree->setCurrentItem(item);
+    }
+
+    const bool isSession = item != nullptr && !item->data(0, Qt::UserRole).toString().isEmpty();
+    const bool isFolder = item != nullptr && item->data(0, Qt::UserRole).toString().isEmpty();
+
+    QMenu menu(this);
+    if (isSession) {
+        menu.addAction("Connect", this, &MainWindow::onOpenSelectedSession);
+        menu.addAction("Open in New Tab", this, &MainWindow::onOpenSelectedSession);
+        menu.addSeparator();
+        menu.addAction("Edit", this, &MainWindow::onEditSelectedSession);
+        menu.addAction("Rename", this, &MainWindow::onRenameSelectedSession);
+        menu.addAction("Duplicate", this, &MainWindow::onDuplicateSelectedSession);
+        menu.addAction("Move to Folder...", this, &MainWindow::onMoveSessionToFolder);
+        menu.addSeparator();
+        menu.addAction("Forget Saved Password", this, &MainWindow::onForgetSelectedPassword);
+        menu.addSeparator();
+        menu.addAction("Delete", this, &MainWindow::onDeleteSelectedSession);
+    } else if (isFolder) {
+        menu.addAction("New Session", this, &MainWindow::onAddSshSession);
+        menu.addAction("New Folder", this, &MainWindow::onNewFolder);
+        menu.addSeparator();
+        menu.addAction("Rename", this, &MainWindow::onRenameSelectedFolder);
+        menu.addAction("Delete", this, &MainWindow::onDeleteSelectedFolder);
+    } else {
+        menu.addAction("New Session", this, &MainWindow::onAddSshSession);
+        menu.addAction("New Folder", this, &MainWindow::onNewFolder);
+    }
+
+    menu.exec(m_sessionTree->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::onRenameSelectedSession() {
+    const auto profile = currentSelectedSession();
+    if (profile.id.isEmpty()) {
+        QMessageBox::information(this, "Sessions", "Select a session first.");
+        return;
+    }
+
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Rename Session", "Session name",
+                                               QLineEdit::Normal, profile.name, &ok);
+    if (!ok || name.trimmed().isEmpty()) {
+        return;
+    }
+
+    auto updated = profile;
+    updated.name = name.trimmed();
+    m_sessionManager->upsert(updated);
+}
+
+void MainWindow::onDuplicateSelectedSession() {
+    const QString sessionId = currentSelectedSessionId();
+    if (sessionId.isEmpty()) {
+        QMessageBox::information(this, "Sessions", "Select a session first.");
+        return;
+    }
+    m_sessionManager->duplicateSession(sessionId);
+}
+
+void MainWindow::onForgetSelectedPassword() {
+    const auto profile = currentSelectedSession();
+    if (profile.id.isEmpty()) {
+        QMessageBox::information(this, "Sessions", "Select a session first.");
+        return;
+    }
+
+    if (m_sessionManager->forgetPassword(profile.id)) {
+        statusBar()->showMessage(QString("Saved password removed for %1").arg(profile.name), 4000);
+    }
+}
+
+void MainWindow::onNewFolder() {
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "New Folder", "Folder name",
+                                               QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QString parent = currentSelectedFolder();
+    const QString path = parent.isEmpty() ? name.trimmed() : parent + "/" + name.trimmed();
+    if (!m_sessionManager->createFolder(path)) {
+        QMessageBox::warning(this, "New Folder", "A folder with that name already exists.");
+    }
+}
+
+void MainWindow::onRenameSelectedFolder() {
+    const QString folder = currentSelectedFolder();
+    if (folder.isEmpty()) {
+        QMessageBox::information(this, "Folders", "Select a folder first.");
+        return;
+    }
+
+    const QString currentName = folder.section('/', -1);
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Rename Folder", "Folder name",
+                                               QLineEdit::Normal, currentName, &ok);
+    if (!ok || name.trimmed().isEmpty()) {
+        return;
+    }
+    m_sessionManager->renameFolder(folder, name.trimmed());
+}
+
+void MainWindow::onDeleteSelectedFolder() {
+    const QString folder = currentSelectedFolder();
+    if (folder.isEmpty()) {
+        QMessageBox::information(this, "Folders", "Select a folder first.");
+        return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle("Delete Folder?");
+    box.setText(QString("Delete folder \"%1\"?").arg(folder));
+    box.setInformativeText("Sessions inside can be kept and moved to the root.");
+    QPushButton* keepButton = box.addButton("Keep Sessions", QMessageBox::AcceptRole);
+    QPushButton* deleteAllButton = box.addButton("Delete Sessions Too", QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+
+    if (box.clickedButton() == keepButton) {
+        m_sessionManager->deleteFolder(folder, false);
+    } else if (box.clickedButton() == deleteAllButton) {
+        m_sessionManager->deleteFolder(folder, true);
+    }
+}
+
+void MainWindow::onMoveSessionToFolder() {
+    const auto profile = currentSelectedSession();
+    if (profile.id.isEmpty()) {
+        QMessageBox::information(this, "Sessions", "Select a session first.");
+        return;
+    }
+
+    QStringList options;
+    options << "(root)";
+    options << m_sessionManager->folders();
+
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(this, "Move to Folder", "Target folder",
+                                                 options, 0, false, &ok);
+    if (!ok) {
+        return;
+    }
+    m_sessionManager->moveSessionToFolder(profile.id, choice == "(root)" ? QString() : choice);
+}
+
+void MainWindow::onToggleSftpPanel() {
+    m_sftpDock->setVisible(!m_sftpDock->isVisible());
+    persistUiState();
+}
+
+void MainWindow::onToggleTunnelPanel() {
+    // Hiding the panel never stops tunnels; TunnelManager state is independent of UI.
+    m_tunnelsDock->setVisible(!m_tunnelsDock->isVisible());
+    persistUiState();
+}
+
+void MainWindow::persistUiState() {
+    QHash<QString, bool> state;
+    state.insert("sftpVisible", m_sftpDock->isVisible());
+    state.insert("tunnelsVisible", m_tunnelsDock->isVisible());
+    state.insert("sessionsVisible", m_sessionsDock->isVisible());
+    m_sessionManager->config()->saveUiState(state);
+}
+
+void MainWindow::persistTunnels() {
+    QJsonArray arr;
+    for (const auto& t : m_tunnelProfiles) {
+        arr.append(t.toJson());
+    }
+    m_sessionManager->config()->saveTunnels(arr);
 }
 
 void MainWindow::createSplitTab(int paneCount) {
@@ -1184,12 +1626,31 @@ void MainWindow::bindSftpToSession(const svy::core::SessionProfile& profile) {
         return;
     }
 
+    // Seed the in-process credential cache so SFTP never re-prompts when the
+    // SSH terminal session already authenticated with a remembered password.
+    const QString resolved = m_sessionManager->resolvePassword(profile);
+    if (!resolved.isEmpty()) {
+        svy::protocols::CredentialCache::setPassword(profile.username, profile.host, profile.port, resolved);
+    }
+
     if (m_sftpClient->connectSession(profile)) {
         m_activeSftpSessionId = profile.id;
         if (m_sftpPath->text().trimmed().isEmpty() || m_sftpPath->text().trimmed() == ".") {
             m_sftpPath->setText(".");
         }
         onRefreshSftpDirectory();
+    } else {
+        // Show a contextual error that keeps the terminal session alive.
+        QMessageBox box(this);
+        box.setWindowTitle("Unable to open SFTP connection");
+        box.setText(QString("Unable to open SFTP connection to %1@%2:%3.")
+                        .arg(profile.username, profile.host).arg(profile.port));
+        box.setInformativeText("The SSH terminal connection is still active.");
+        box.setStandardButtons(QMessageBox::Retry | QMessageBox::Close);
+        box.setDefaultButton(QMessageBox::Retry);
+        if (box.exec() == QMessageBox::Retry) {
+            bindSftpToSession(profile);
+        }
     }
 }
 

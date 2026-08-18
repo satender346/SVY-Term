@@ -4,6 +4,7 @@
 #include <QUuid>
 
 #include "config/AppConfig.h"
+#include "protocols/CredentialManager.h"
 
 namespace svy::core {
 
@@ -42,11 +43,205 @@ SessionProfile SessionManager::createDefaultSshSession() const {
 
 void SessionManager::load() {
     m_sessions = m_config->loadSessions();
+    m_folders = m_config->loadFolders();
+    migrateLegacyCredentials();
     emit sessionsChanged();
 }
 
 bool SessionManager::save() {
-    return m_config->saveSessions(m_sessions);
+    return m_config->saveSessions(m_sessions) && m_config->saveFolders(m_folders);
+}
+
+void SessionManager::migrateLegacyCredentials() {
+    bool migrated = false;
+    for (auto& session : m_sessions) {
+        if (session.password.isEmpty()) {
+            continue;
+        }
+
+        // Old configs kept the password in JSON; move it into the Keychain and strip it.
+        const QString reference = session.credentialRef.isEmpty()
+                                      ? protocols::CredentialManager::makeReference(session.username, session.host, session.port)
+                                      : session.credentialRef;
+        if (!reference.isEmpty() && protocols::CredentialManager::store(reference, session.password)) {
+            session.credentialRef = reference;
+            session.rememberCredentials = true;
+        }
+        session.password.clear();
+        migrated = true;
+    }
+
+    if (migrated) {
+        save();
+    }
+}
+
+QStringList SessionManager::folders() const {
+    QStringList all = m_folders;
+    for (const auto& session : m_sessions) {
+        if (!session.folderPath.isEmpty() && !all.contains(session.folderPath)) {
+            all.append(session.folderPath);
+        }
+    }
+    all.sort();
+    return all;
+}
+
+bool SessionManager::createFolder(const QString& folderPath) {
+    const QString trimmed = folderPath.trimmed();
+    if (trimmed.isEmpty() || m_folders.contains(trimmed)) {
+        return false;
+    }
+    m_folders.append(trimmed);
+    emit sessionsChanged();
+    return save();
+}
+
+bool SessionManager::renameFolder(const QString& folderPath, const QString& newName) {
+    const QString trimmed = newName.trimmed();
+    if (folderPath.isEmpty() || trimmed.isEmpty()) {
+        return false;
+    }
+
+    const int lastSeparator = folderPath.lastIndexOf('/');
+    const QString parent = lastSeparator > 0 ? folderPath.left(lastSeparator) : QString();
+    const QString updated = parent.isEmpty() ? trimmed : parent + "/" + trimmed;
+    if (updated == folderPath) {
+        return true;
+    }
+
+    for (auto& folder : m_folders) {
+        if (folder == folderPath) {
+            folder = updated;
+        } else if (folder.startsWith(folderPath + "/")) {
+            folder = updated + folder.mid(folderPath.size());
+        }
+    }
+
+    for (auto& session : m_sessions) {
+        if (session.folderPath == folderPath) {
+            session.folderPath = updated;
+        } else if (session.folderPath.startsWith(folderPath + "/")) {
+            session.folderPath = updated + session.folderPath.mid(folderPath.size());
+        }
+    }
+
+    emit sessionsChanged();
+    return save();
+}
+
+bool SessionManager::deleteFolder(const QString& folderPath, bool deleteSessions) {
+    if (folderPath.isEmpty()) {
+        return false;
+    }
+
+    m_folders.removeAll(folderPath);
+    for (int i = m_folders.size() - 1; i >= 0; --i) {
+        if (m_folders.at(i).startsWith(folderPath + "/")) {
+            m_folders.removeAt(i);
+        }
+    }
+
+    for (int i = m_sessions.size() - 1; i >= 0; --i) {
+        const QString sessionFolder = m_sessions.at(i).folderPath;
+        if (sessionFolder != folderPath && !sessionFolder.startsWith(folderPath + "/")) {
+            continue;
+        }
+        if (deleteSessions) {
+            forgetPassword(m_sessions.at(i).id);
+            m_sessions.removeAt(i);
+        } else {
+            m_sessions[i].folderPath.clear();
+        }
+    }
+
+    emit sessionsChanged();
+    return save();
+}
+
+bool SessionManager::moveSessionToFolder(const QString& sessionId, const QString& folderPath) {
+    for (auto& session : m_sessions) {
+        if (session.id != sessionId) {
+            continue;
+        }
+        session.folderPath = folderPath;
+        emit sessionsChanged();
+        return save();
+    }
+    return false;
+}
+
+QString SessionManager::duplicateSession(const QString& sessionId) {
+    for (const auto& session : m_sessions) {
+        if (session.id != sessionId) {
+            continue;
+        }
+
+        SessionProfile copy = session;
+        copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        copy.name = session.name + " (copy)";
+        copy.password.clear();
+
+        // The duplicate points at the same Keychain entry, so no re-prompt is needed.
+        m_sessions.push_back(copy);
+        emit sessionsChanged();
+        save();
+        return copy.id;
+    }
+    return {};
+}
+
+QString SessionManager::resolvePassword(const SessionProfile& profile) const {
+    if (!profile.password.isEmpty()) {
+        return profile.password;
+    }
+
+    const QString reference = profile.credentialRef.isEmpty()
+                                  ? protocols::CredentialManager::makeReference(profile.username, profile.host, profile.port)
+                                  : profile.credentialRef;
+    return protocols::CredentialManager::retrieve(reference);
+}
+
+bool SessionManager::rememberPassword(const SessionProfile& profile, const QString& password) {
+    if (password.isEmpty()) {
+        return false;
+    }
+
+    const QString reference = protocols::CredentialManager::makeReference(profile.username, profile.host, profile.port);
+    if (reference.isEmpty() || !protocols::CredentialManager::store(reference, password)) {
+        return false;
+    }
+
+    for (auto& session : m_sessions) {
+        if (session.id != profile.id) {
+            continue;
+        }
+        session.credentialRef = reference;
+        session.rememberCredentials = true;
+        session.password.clear();
+        emit sessionsChanged();
+        return save();
+    }
+    return true;
+}
+
+bool SessionManager::forgetPassword(const QString& sessionId) {
+    for (auto& session : m_sessions) {
+        if (session.id != sessionId) {
+            continue;
+        }
+
+        const QString reference = session.credentialRef.isEmpty()
+                                      ? protocols::CredentialManager::makeReference(session.username, session.host, session.port)
+                                      : session.credentialRef;
+        protocols::CredentialManager::remove(reference);
+        session.credentialRef.clear();
+        session.rememberCredentials = false;
+        session.password.clear();
+        emit sessionsChanged();
+        return save();
+    }
+    return false;
 }
 
 bool SessionManager::upsert(const SessionProfile& profile) {
@@ -66,6 +261,7 @@ bool SessionManager::upsert(const SessionProfile& profile) {
 bool SessionManager::removeById(const QString& id) {
     for (int i = 0; i < m_sessions.size(); ++i) {
         if (m_sessions[i].id == id) {
+            forgetPassword(id);
             m_sessions.removeAt(i);
             emit sessionsChanged();
             return save();
@@ -115,16 +311,19 @@ QJsonObject SessionProfile::toJson() const {
     out["id"] = id;
     out["name"] = name;
     out["type"] = sessionTypeToString(type);
+    out["folderPath"] = folderPath;
+    out["sortOrder"] = sortOrder;
     out["host"] = host;
     out["port"] = port;
     out["username"] = username;
-    out["password"] = password;
+    out["authMethod"] = authMethod;
+    out["rememberCredentials"] = rememberCredentials;
+    out["credentialRef"] = credentialRef;
     out["privateKeyPath"] = privateKeyPath;
     out["useProxy"] = useProxy;
     out["proxyHost"] = proxyHost;
     out["proxyPort"] = proxyPort;
     out["proxyUsername"] = proxyUsername;
-    out["proxyPassword"] = proxyPassword;
     out["tunnelMode"] = tunnelMode;
     out["tunnelLocalPort"] = tunnelLocalPort;
     out["tunnelRemoteHost"] = tunnelRemoteHost;
@@ -154,16 +353,21 @@ SessionProfile SessionProfile::fromJson(const QJsonObject& obj) {
     profile.id = obj.value("id").toString();
     profile.name = obj.value("name").toString();
     profile.type = sessionTypeFromString(obj.value("type").toString());
+    profile.folderPath = obj.value("folderPath").toString();
+    profile.sortOrder = obj.value("sortOrder").toInt(0);
     profile.host = obj.value("host").toString();
     profile.port = obj.value("port").toInt(22);
     profile.username = obj.value("username").toString();
+    // Legacy configs stored the password inline; it is migrated to the Keychain on load.
     profile.password = obj.value("password").toString();
+    profile.authMethod = obj.value("authMethod").toString("password");
+    profile.rememberCredentials = obj.value("rememberCredentials").toBool(false);
+    profile.credentialRef = obj.value("credentialRef").toString();
     profile.privateKeyPath = obj.value("privateKeyPath").toString();
     profile.useProxy = obj.value("useProxy").toBool(false);
     profile.proxyHost = obj.value("proxyHost").toString();
     profile.proxyPort = obj.value("proxyPort").toInt(0);
     profile.proxyUsername = obj.value("proxyUsername").toString();
-    profile.proxyPassword = obj.value("proxyPassword").toString();
     profile.tunnelMode = obj.value("tunnelMode").toString("none");
     profile.tunnelLocalPort = obj.value("tunnelLocalPort").toInt(0);
     profile.tunnelRemoteHost = obj.value("tunnelRemoteHost").toString();

@@ -10,6 +10,8 @@ class QListWidget;
 class QLineEdit;
 class QTableWidget;
 class QTabWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 
 namespace svy::terminal {
 class TerminalWidget;
@@ -40,6 +42,18 @@ private slots:
     void onAddSshSession();
     void onEditSelectedSession();
     void onDeleteSelectedSession();
+    void onRenameSelectedSession();
+    void onDuplicateSelectedSession();
+    void onForgetSelectedPassword();
+    void onNewFolder();
+    void onRenameSelectedFolder();
+    void onDeleteSelectedFolder();
+    void onMoveSessionToFolder();
+    void onSessionContextMenu(const QPoint& position);
+    void onSessionFilterChanged(const QString& text);
+    void onToggleSftpPanel();
+    void onToggleTunnelPanel();
+    void onFocusSessionSearch();
     void onOpenSftpForSelectedSession();
     void onRefreshSftpDirectory();
     void onUploadToSftp();
@@ -70,8 +84,13 @@ private slots:
 private:
     svy::core::SessionProfile currentSelectedSession() const;
     QString currentSelectedSessionId() const;
+    QString currentSelectedFolder() const;
     void buildMenu();
     void refreshSessionList();
+    void applySessionFilter();
+    void updateConnectionIndicators();
+    void persistUiState();
+    void persistTunnels();
     void createSplitTab(int paneCount);
     void bindSftpToSession(const svy::core::SessionProfile& profile);
     QWidget* createPaneWidgetForChoice(const QString& choice, QWidget* parent);
@@ -86,7 +105,8 @@ private:
                              bool editing);
 
     svy::core::SessionManager* m_sessionManager;
-    QListWidget* m_sessionList;
+    QTreeWidget* m_sessionTree;
+    QLineEdit* m_sessionFilter;
     QTabWidget* m_tabs;
     svy::protocols::SftpClient* m_sftpClient;
     svy::tunnels::TunnelManager* m_tunnelManager;

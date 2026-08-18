@@ -2,6 +2,8 @@
 
 #include <QObject>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QPointer>
 #include <QSet>
 #include <QString>
@@ -17,13 +19,17 @@ struct TunnelProfile {
     QString mode = "local"; // local|remote|dynamic
     QString gatewayHost;
     QString gatewayUser;
-    QString gatewayPassword;
+    QString gatewayPassword; // transient only — resolved from Keychain at runtime
+    QString credentialRef;   // Keychain reference for gateway password
     int gatewayPort = 22;
     QString localHost = "127.0.0.1";
     int localPort = 0;
     QString remoteHost;
     int remotePort = 0;
     QString privateKeyPath;
+
+    QJsonObject toJson() const;
+    static TunnelProfile fromJson(const QJsonObject& obj);
 };
 
 class TunnelManager : public QObject {

@@ -21,8 +21,13 @@ public:
     void setProfile(const svy::core::SessionProfile& profile);
     svy::core::SessionProfile profile() const;
 
+    // Transient password entered in the dialog — never stored in the returned profile.
+    QString enteredPassword() const;
+    bool rememberCredentials() const;
+
 private slots:
     void onTypeChanged();
+    void onAuthMethodChanged();
     void onBrowseKeyPath();
     void onHostChanged(const QString& text);
     void onProxyToggled(bool enabled);
@@ -34,7 +39,9 @@ private:
     QLineEdit* m_host;
     QSpinBox* m_port;
     QLineEdit* m_username;
+    QComboBox* m_authMethod;
     QLineEdit* m_password;
+    QCheckBox* m_rememberCredentials;
     QLineEdit* m_keyPath;
     QPushButton* m_browseKeyPath;
 

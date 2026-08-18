@@ -28,11 +28,17 @@ struct SessionProfile {
     QString name;
     SessionType type = SessionType::Local;
 
+    QString folderPath; // empty = root; "Production/Web" for nesting
+    int sortOrder = 0;
+
     QString host;
     int port = 22;
     QString username;
-    QString password;
+    QString password; // transient only: migrated to Keychain, never persisted
     QString privateKeyPath;
+    QString authMethod = "password"; // password|key|agent
+    bool rememberCredentials = false;
+    QString credentialRef;
 
     bool useProxy = false;
     QString proxyHost;

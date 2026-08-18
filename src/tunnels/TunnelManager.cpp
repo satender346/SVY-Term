@@ -1,5 +1,6 @@
 #include "tunnels/TunnelManager.h"
 
+#include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QUuid>
@@ -7,6 +8,41 @@
 #include <memory>
 
 namespace svy::tunnels {
+
+QJsonObject TunnelProfile::toJson() const {
+    QJsonObject o;
+    o["id"] = id;
+    o["name"] = name;
+    o["mode"] = mode;
+    o["gatewayHost"] = gatewayHost;
+    o["gatewayUser"] = gatewayUser;
+    o["credentialRef"] = credentialRef;
+    o["gatewayPort"] = gatewayPort;
+    o["localHost"] = localHost;
+    o["localPort"] = localPort;
+    o["remoteHost"] = remoteHost;
+    o["remotePort"] = remotePort;
+    o["privateKeyPath"] = privateKeyPath;
+    // gatewayPassword is intentionally omitted — stored in Keychain via credentialRef
+    return o;
+}
+
+TunnelProfile TunnelProfile::fromJson(const QJsonObject& o) {
+    TunnelProfile p;
+    p.id = o.value("id").toString();
+    p.name = o.value("name").toString();
+    p.mode = o.value("mode").toString("local");
+    p.gatewayHost = o.value("gatewayHost").toString();
+    p.gatewayUser = o.value("gatewayUser").toString();
+    p.credentialRef = o.value("credentialRef").toString();
+    p.gatewayPort = o.value("gatewayPort").toInt(22);
+    p.localHost = o.value("localHost").toString("127.0.0.1");
+    p.localPort = o.value("localPort").toInt(0);
+    p.remoteHost = o.value("remoteHost").toString();
+    p.remotePort = o.value("remotePort").toInt(0);
+    p.privateKeyPath = o.value("privateKeyPath").toString();
+    return p;
+}
 
 TunnelManager::TunnelManager(QObject* parent)
     : QObject(parent) {}

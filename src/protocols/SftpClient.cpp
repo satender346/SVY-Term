@@ -8,6 +8,7 @@
 #include <QString>
 
 #include "protocols/CredentialCache.h"
+#include "protocols/CredentialManager.h"
 
 #if SVYTERM_HAS_LIBSSH
 #include <fcntl.h>
@@ -146,6 +147,13 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
     if (effectivePassword.isEmpty()) {
         effectivePassword = svy::protocols::CredentialCache::getPassword(profile.username, profile.host, profile.port);
     }
+    if (effectivePassword.isEmpty()) {
+        // Reuse the SSH session's stored credential so SFTP never re-prompts.
+        const QString reference = profile.credentialRef.isEmpty()
+                                      ? CredentialManager::makeReference(profile.username, profile.host, profile.port)
+                                      : profile.credentialRef;
+        effectivePassword = CredentialManager::retrieve(reference);
+    }
 
     int authResult = ssh_userauth_publickey_auto(m_sshSession, nullptr, nullptr);
     if (authResult != SSH_AUTH_SUCCESS && !effectivePassword.isEmpty()) {
@@ -166,6 +174,11 @@ bool SftpClient::connectSession(const svy::core::SessionProfile& profile) {
             const QByteArray pass = password.toUtf8();
             authResult = ssh_userauth_password(m_sshSession, nullptr, pass.constData());
             effectivePassword = password;
+            if (authResult == SSH_AUTH_SUCCESS && profile.rememberCredentials) {
+                CredentialManager::store(
+                    CredentialManager::makeReference(profile.username, profile.host, profile.port),
+                    password);
+            }
         }
 
         if (authResult != SSH_AUTH_SUCCESS) {

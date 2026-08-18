@@ -83,7 +83,9 @@ jobs:
               done < <(otool -L "$target" | tail -n +2 | awk '{print $1}')
             done < <(list_macho)
             echo "pass $pass: changed=$changed"
-            [ "$changed" -eq 0 ] && break
+            if [ "$changed" -eq 0 ]; then
+              break
+            fi
           done
 
       - name: Verify no external library paths remain
