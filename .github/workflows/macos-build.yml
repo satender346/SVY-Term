@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
       - name: Checkout
@@ -30,6 +30,7 @@ jobs:
           export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:$(brew --prefix libvterm)/lib/pkgconfig:${PKG_CONFIG_PATH}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DSVYTERM_ENABLE_LIBSSH=ON
 
@@ -40,9 +41,71 @@ jobs:
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=2
 
-      - name: Re-sign app bundle (ad-hoc)
+      - name: Bundle non-Qt dylibs (libvterm, libssh, transitive deps)
         run: |
-          codesign --force --deep --sign - build/SVY-Term.app
+          set -euo pipefail
+          APP="build/SVY-Term.app"
+          BIN="$APP/Contents/MacOS/SVY-Term"
+          FRAMEWORKS="$APP/Contents/Frameworks"
+          mkdir -p "$FRAMEWORKS"
+
+          # macdeployqt only relocates Qt; Homebrew deps must be vendored or the app
+          # will reference /opt/homebrew paths that do not exist on user machines.
+          relocate() {
+            target="$1"
+            otool -L "$target" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+              case "$dep" in
+                /opt/homebrew/*|/usr/local/*)
+                  base="$(basename "$dep")"
+                  if [ ! -f "$FRAMEWORKS/$base" ]; then
+                    cp -L "$dep" "$FRAMEWORKS/$base"
+                    chmod u+w "$FRAMEWORKS/$base"
+                    install_name_tool -id "@rpath/$base" "$FRAMEWORKS/$base"
+                    relocate "$FRAMEWORKS/$base"
+                  fi
+                  install_name_tool -change "$dep" "@rpath/$base" "$target"
+                  ;;
+              esac
+            done
+          }
+
+          chmod u+w "$BIN"
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null || true
+          relocate "$BIN"
+          for lib in "$FRAMEWORKS"/*.dylib; do
+            [ -f "$lib" ] || continue
+            relocate "$lib"
+          done
+
+      - name: Verify no external library paths remain
+        run: |
+          set -euo pipefail
+          APP="build/SVY-Term.app"
+          echo "Builder macOS: $(sw_vers -productVersion)"
+          echo "Architectures: $(lipo -archs "$APP/Contents/MacOS/SVY-Term")"
+          echo "Minimum macOS required by binary:"
+          otool -l "$APP/Contents/MacOS/SVY-Term" | grep -A3 LC_BUILD_VERSION | grep minos || true
+          LEAKED=0
+          while IFS= read -r binary; do
+            if otool -L "$binary" | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
+              echo "ERROR: unbundled dependency in $binary"
+              otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
+              LEAKED=1
+            fi
+          done < <(find "$APP" -type f \( -perm -111 -o -name '*.dylib' \))
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "Bundle would fail to launch on a clean Mac."
+            exit 1
+          fi
+          echo "All dependencies are bundled."
+
+      - name: Re-sign app bundle (ad-hoc, inside-out)
+        run: |
+          set -euo pipefail
+          APP="build/SVY-Term.app"
+          find "$APP/Contents/Frameworks" -name '*.dylib' -exec codesign --force --timestamp=none --sign - {} \;
+          find "$APP/Contents/Frameworks" -name '*.framework' -maxdepth 1 -exec codesign --force --timestamp=none --sign - {} \;
+          codesign --force --timestamp=none --sign - "$APP"
 
       - name: Verify code signature
         run: |
