@@ -45,36 +45,45 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          BIN="$APP/Contents/MacOS/SVY-Term"
           FRAMEWORKS="$APP/Contents/Frameworks"
           mkdir -p "$FRAMEWORKS"
 
-          # macdeployqt only relocates Qt; Homebrew deps must be vendored or the app
-          # will reference /opt/homebrew paths that do not exist on user machines.
-          relocate() {
-            target="$1"
-            otool -L "$target" | tail -n +2 | awk '{print $1}' | while read -r dep; do
-              case "$dep" in
-                /opt/homebrew/*|/usr/local/*)
-                  base="$(basename "$dep")"
-                  if [ ! -f "$FRAMEWORKS/$base" ]; then
-                    cp -L "$dep" "$FRAMEWORKS/$base"
-                    chmod u+w "$FRAMEWORKS/$base"
-                    install_name_tool -id "@rpath/$base" "$FRAMEWORKS/$base"
-                    relocate "$FRAMEWORKS/$base"
-                  fi
-                  install_name_tool -change "$dep" "@rpath/$base" "$target"
-                  ;;
-              esac
+          # macdeployqt only relocates Qt itself. Homebrew deps (libvterm, libssh,
+          # and Qt's own pcre2/zstd/glib) stay as /opt/homebrew paths that do not
+          # exist on user machines, so every Mach-O in the bundle is rewritten to
+          # a @loader_path reference into Contents/Frameworks.
+          list_macho() {
+            find "$APP" -type f | while read -r f; do
+              if file -b "$f" | grep -q 'Mach-O'; then echo "$f"; fi
             done
           }
 
-          chmod u+w "$BIN"
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null || true
-          relocate "$BIN"
-          for lib in "$FRAMEWORKS"/*.dylib; do
-            [ -f "$lib" ] || continue
-            relocate "$lib"
+          rel_to_frameworks() {
+            python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))" "$FRAMEWORKS" "$1"
+          }
+
+          for pass in 1 2 3 4 5; do
+            changed=0
+            while IFS= read -r target; do
+              chmod u+w "$target"
+              rel="$(rel_to_frameworks "$target")"
+              while IFS= read -r dep; do
+                case "$dep" in
+                  /opt/homebrew/*|/usr/local/*)
+                    base="$(basename "$dep")"
+                    if [ ! -f "$FRAMEWORKS/$base" ]; then
+                      cp -L "$dep" "$FRAMEWORKS/$base"
+                      chmod u+w "$FRAMEWORKS/$base"
+                      install_name_tool -id "@loader_path/$base" "$FRAMEWORKS/$base"
+                    fi
+                    install_name_tool -change "$dep" "@loader_path/$rel/$base" "$target"
+                    changed=1
+                    ;;
+                esac
+              done < <(otool -L "$target" | tail -n +2 | awk '{print $1}')
+            done < <(list_macho)
+            echo "pass $pass: changed=$changed"
+            [ "$changed" -eq 0 ] && break
           done
 
       - name: Verify no external library paths remain
@@ -87,12 +96,14 @@ jobs:
           otool -l "$APP/Contents/MacOS/SVY-Term" | grep -A3 LC_BUILD_VERSION | grep minos || true
           LEAKED=0
           while IFS= read -r binary; do
-            if otool -L "$binary" | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
-              echo "ERROR: unbundled dependency in $binary"
-              otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
-              LEAKED=1
+            if file -b "$binary" | grep -q 'Mach-O'; then
+              if otool -L "$binary" | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
+                echo "ERROR: unbundled dependency in $binary"
+                otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
+                LEAKED=1
+              fi
             fi
-          done < <(find "$APP" -type f \( -perm -111 -o -name '*.dylib' \))
+          done < <(find "$APP" -type f)
           if [ "$LEAKED" -ne 0 ]; then
             echo "Bundle would fail to launch on a clean Mac."
             exit 1
