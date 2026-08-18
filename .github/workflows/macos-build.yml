@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Qt on runner
+      - name: Install dependencies
         run: |
           brew update
           brew install qt libssh libvterm
@@ -27,7 +27,7 @@ jobs:
       - name: Configure
         run: |
           QT_PREFIX="$(brew --prefix qt)"
-          export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:$(brew --prefix libvterm)/lib/pkgconfig:${PKG_CONFIG_PATH}"
+          export PKG_CONFIG_PATH="$(brew --prefix libssh)/lib/pkgconfig:$(brew --prefix libvterm)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
@@ -37,58 +37,68 @@ jobs:
       - name: Build
         run: cmake --build build -j
 
-      - name: Bundle Qt frameworks
+      - name: Bundle with macdeployqt
         run: |
-          "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=2
+          "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=1
 
-      - name: Bundle non-Qt dylibs (libvterm, libssh, transitive deps)
+      - name: Bundle Homebrew dylibs
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          FRAMEWORKS="$APP/Contents/Frameworks"
-          mkdir -p "$FRAMEWORKS"
+          MACOS="$APP/Contents/MacOS"
+          FW="$APP/Contents/Frameworks"
+          mkdir -p "$FW"
 
-          # macdeployqt only relocates Qt itself. Homebrew deps (libvterm, libssh,
-          # and Qt's own pcre2/zstd/glib) stay as /opt/homebrew paths that do not
-          # exist on user machines, so every Mach-O in the bundle is rewritten to
-          # a @loader_path reference into Contents/Frameworks.
+          # Collect every Mach-O in the bundle
           list_macho() {
-            find "$APP" -type f | while read -r f; do
-              if file -b "$f" | grep -q 'Mach-O'; then echo "$f"; fi
-            done
+            find "$APP" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1
           }
 
-          rel_to_frameworks() {
-            python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))" "$FRAMEWORKS" "$1"
+          # Copy a Homebrew dylib into Frameworks and fix its own id
+          copy_dep() {
+            local src="$1"
+            local base
+            base="$(basename "$src")"
+            if [ ! -f "$FW/$base" ]; then
+              cp -L "$src" "$FW/$base"
+              chmod u+w "$FW/$base"
+              install_name_tool -id "@rpath/$base" "$FW/$base"
+            fi
           }
 
-          for pass in 1 2 3 4 5; do
+          # Rewrite all /opt/homebrew and /usr/local references in every Mach-O
+          # Run multiple passes until nothing changes (transitive deps)
+          for pass in $(seq 1 8); do
             changed=0
             while IFS= read -r target; do
+              [ -f "$target" ] || continue
               chmod u+w "$target"
-              rel="$(rel_to_frameworks "$target")"
               while IFS= read -r dep; do
                 case "$dep" in
                   /opt/homebrew/*|/usr/local/*)
                     base="$(basename "$dep")"
-                    if [ ! -f "$FRAMEWORKS/$base" ]; then
-                      cp -L "$dep" "$FRAMEWORKS/$base"
-                      chmod u+w "$FRAMEWORKS/$base"
-                      install_name_tool -id "@loader_path/$base" "$FRAMEWORKS/$base"
-                    fi
-                    install_name_tool -change "$dep" "@loader_path/$rel/$base" "$target"
+                    copy_dep "$dep"
+                    install_name_tool -change "$dep" "@rpath/$base" "$target"
                     changed=1
                     ;;
                 esac
-              done < <(otool -L "$target" | tail -n +2 | awk '{print $1}')
+              done < <(otool -L "$target" 2>/dev/null | tail -n +2 | awk '{print $1}')
             done < <(list_macho)
-            echo "pass $pass: changed=$changed"
-            if [ "$changed" -eq 0 ]; then
-              break
-            fi
+            echo "Pass $pass: changed=$changed"
+            [ "$changed" -eq 0 ] && break
           done
 
-      - name: Verify no external library paths remain
+          # Ensure the main binary has an @rpath entry pointing at ../Frameworks
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS/SVY-Term" 2>/dev/null || true
+
+          # Ensure every framework dylib also has @rpath pointing at its own Frameworks dir
+          while IFS= read -r target; do
+            [ -f "$target" ] || continue
+            install_name_tool -add_rpath "@loader_path/../Frameworks" "$target" 2>/dev/null || true
+            install_name_tool -add_rpath "@loader_path/../../.." "$target" 2>/dev/null || true
+          done < <(list_macho)
+
+      - name: Verify bundle is self-contained
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
@@ -98,12 +108,11 @@ jobs:
           otool -l "$APP/Contents/MacOS/SVY-Term" | grep -A3 LC_BUILD_VERSION | grep minos || true
           LEAKED=0
           while IFS= read -r binary; do
-            if file -b "$binary" | grep -q 'Mach-O'; then
-              if otool -L "$binary" | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
-                echo "ERROR: unbundled dependency in $binary"
-                otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
-                LEAKED=1
-              fi
+            file -b "$binary" | grep -q 'Mach-O' || continue
+            if otool -L "$binary" 2>/dev/null | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
+              echo "ERROR: unbundled dependency in $binary"
+              otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
+              LEAKED=1
             fi
           done < <(find "$APP" -type f)
           if [ "$LEAKED" -ne 0 ]; then
@@ -116,15 +125,17 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          find "$APP/Contents/Frameworks" -name '*.dylib' -exec codesign --force --timestamp=none --sign - {} \;
-          find "$APP/Contents/Frameworks" -name '*.framework' -maxdepth 1 -exec codesign --force --timestamp=none --sign - {} \;
+          # Sign dylibs first, then frameworks, then the app itself
+          find "$APP/Contents/Frameworks" -name '*.dylib' \
+            -exec codesign --force --timestamp=none --sign - {} \;
+          find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' \
+            -exec codesign --force --timestamp=none --sign - {} \;
           codesign --force --timestamp=none --sign - "$APP"
 
       - name: Verify code signature
-        run: |
-          codesign --verify --deep --strict --verbose=2 build/SVY-Term.app
+        run: codesign --verify --deep --strict --verbose=2 build/SVY-Term.app
 
-      - name: Package app bundle
+      - name: Package
         run: |
           cd build
           ditto -c -k --sequesterRsrc --keepParent SVY-Term.app SVY-Term-macOS.zip
