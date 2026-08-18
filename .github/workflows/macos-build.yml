@@ -144,10 +144,17 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          find "$APP/Contents/Frameworks" -name '*.dylib' \
-            -exec codesign --force --timestamp=none --sign - {} \;
+          # Sign every Mach-O leaf (dylibs + plugins) before signing frameworks and the app
+          find "$APP" -type f -print0 | xargs -0 file 2>/dev/null \
+            | grep 'Mach-O' | cut -d: -f1 \
+            | grep -v 'Contents/MacOS/SVY-Term' \
+            | while IFS= read -r f; do
+                codesign --force --timestamp=none --sign - "$f"
+              done
+          # Sign frameworks as bundles
           find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' \
             -exec codesign --force --timestamp=none --sign - {} \;
+          # Finally sign the app bundle itself
           codesign --force --timestamp=none --sign - "$APP"
 
       - name: Verify code signature
