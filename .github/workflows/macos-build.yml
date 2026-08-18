@@ -41,61 +41,79 @@ jobs:
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/SVY-Term.app -verbose=1
 
-      - name: Bundle Homebrew dylibs
+      - name: Fix all unbundled Homebrew references
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          MACOS="$APP/Contents/MacOS"
           FW="$APP/Contents/Frameworks"
+          MACOS="$APP/Contents/MacOS"
           mkdir -p "$FW"
 
-          # Collect every Mach-O in the bundle
+          # Return all Mach-O files in the bundle
           list_macho() {
-            find "$APP" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1
+            find "$APP" -type f -print0 | xargs -0 file 2>/dev/null \
+              | grep 'Mach-O' | cut -d: -f1
           }
 
-          # Copy a Homebrew dylib into Frameworks and fix its own id
-          copy_dep() {
+          # Copy a Homebrew dylib into Frameworks (once) and fix its LC_ID_DYLIB
+          ensure_bundled() {
             local src="$1"
             local base
             base="$(basename "$src")"
             if [ ! -f "$FW/$base" ]; then
               cp -L "$src" "$FW/$base"
               chmod u+w "$FW/$base"
-              install_name_tool -id "@rpath/$base" "$FW/$base"
             fi
+            # Always fix the id so it resolves via @rpath
+            install_name_tool -id "@rpath/$base" "$FW/$base"
           }
 
-          # Rewrite all /opt/homebrew and /usr/local references in every Mach-O
-          # Run multiple passes until nothing changes (transitive deps)
+          # Pass 1-8: copy missing deps and rewrite -change references
           for pass in $(seq 1 8); do
             changed=0
             while IFS= read -r target; do
               [ -f "$target" ] || continue
               chmod u+w "$target"
+
+              # Get the LC_ID_DYLIB of this file (first entry in otool -L output)
+              own_id="$(otool -L "$target" 2>/dev/null | sed -n '2p' | awk '{print $1}')"
+
+              # Fix LC_ID_DYLIB if it still points to Homebrew
+              case "$own_id" in
+                /opt/homebrew/*|/usr/local/*)
+                  base="$(basename "$own_id")"
+                  install_name_tool -id "@rpath/$base" "$target"
+                  changed=1
+                  ;;
+              esac
+
+              # Fix all dependency references (LC_LOAD_DYLIB), skipping line 1 (binary path)
+              # and line 2 (own id, already handled above)
               while IFS= read -r dep; do
                 case "$dep" in
                   /opt/homebrew/*|/usr/local/*)
                     base="$(basename "$dep")"
-                    copy_dep "$dep"
+                    ensure_bundled "$dep"
                     install_name_tool -change "$dep" "@rpath/$base" "$target"
                     changed=1
                     ;;
                 esac
-              done < <(otool -L "$target" 2>/dev/null | tail -n +2 | awk '{print $1}')
+              done < <(otool -L "$target" 2>/dev/null | tail -n +3 | awk '{print $1}')
             done < <(list_macho)
             echo "Pass $pass: changed=$changed"
             [ "$changed" -eq 0 ] && break
           done
 
-          # Ensure the main binary has an @rpath entry pointing at ../Frameworks
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS/SVY-Term" 2>/dev/null || true
+          # Ensure the main binary can find @rpath libs
+          install_name_tool -add_rpath "@executable_path/../Frameworks" \
+            "$MACOS/SVY-Term" 2>/dev/null || true
 
-          # Ensure every framework dylib also has @rpath pointing at its own Frameworks dir
+          # Ensure every Mach-O inside the bundle can find sibling libs via @rpath
           while IFS= read -r target; do
             [ -f "$target" ] || continue
-            install_name_tool -add_rpath "@loader_path/../Frameworks" "$target" 2>/dev/null || true
-            install_name_tool -add_rpath "@loader_path/../../.." "$target" 2>/dev/null || true
+            install_name_tool -add_rpath "@loader_path" "$target" 2>/dev/null || true
+            install_name_tool -add_rpath "@loader_path/../.." "$target" 2>/dev/null || true
+            install_name_tool -add_rpath "@executable_path/../Frameworks" "$target" 2>/dev/null || true
           done < <(list_macho)
 
       - name: Verify bundle is self-contained
@@ -109,6 +127,7 @@ jobs:
           LEAKED=0
           while IFS= read -r binary; do
             file -b "$binary" | grep -q 'Mach-O' || continue
+            # Check ALL lines of otool -L (including LC_ID_DYLIB on line 2)
             if otool -L "$binary" 2>/dev/null | tail -n +2 | grep -Eq '/opt/homebrew/|/usr/local/'; then
               echo "ERROR: unbundled dependency in $binary"
               otool -L "$binary" | grep -E '/opt/homebrew/|/usr/local/'
@@ -125,7 +144,6 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/SVY-Term.app"
-          # Sign dylibs first, then frameworks, then the app itself
           find "$APP/Contents/Frameworks" -name '*.dylib' \
             -exec codesign --force --timestamp=none --sign - {} \;
           find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' \
