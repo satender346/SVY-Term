@@ -95,6 +95,7 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
     )
+    target_link_libraries(SVY-Term PRIVATE "-framework Security")
 endif()
 
 install(TARGETS SVY-Term
