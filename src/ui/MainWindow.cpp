@@ -188,7 +188,10 @@ MainWindow::MainWindow(svy::core::SessionManager* sessionManager, QWidget* paren
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget* tab = m_tabs->widget(index);
         m_tabs->removeTab(index);
-        delete tab;
+        // Use deleteLater so any in-flight async reaper threads that hold
+        // a QMetaObject::invokeMethod back to the session object remain valid
+        // until the event loop processes the deferred delete.
+        tab->deleteLater();
     });
     connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
         auto* sshTab = qobject_cast<svy::terminal::SshTerminalWidget*>(m_tabs->widget(index));
@@ -648,7 +651,7 @@ void MainWindow::buildMenu() {
         if (idx >= 0) {
             QWidget* tab = m_tabs->widget(idx);
             m_tabs->removeTab(idx);
-            delete tab;
+            tab->deleteLater();
         }
     });
     connect(openSelected, &QAction::triggered, this, &MainWindow::onOpenSelectedSession);

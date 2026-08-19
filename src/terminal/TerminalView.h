@@ -28,6 +28,10 @@ public:
     void copySelection();
     void pasteFromClipboard();
 
+    void setRightClickPaste(bool enabled) { m_rightClickPaste = enabled; }
+    void setWarnMultiLine(bool enabled) { m_warnMultiLine = enabled; }
+    void setCopyOnSelect(bool enabled) { m_copyOnSelect = enabled; }
+
     int columns() const { return m_columns; }
     int rows() const { return m_rows; }
 
@@ -106,6 +110,11 @@ private:
 
     bool m_emitInput = false;
     bool m_repaintScheduled = false;
+
+    // Configurable behaviour
+    bool m_rightClickPaste = true;   // true = right-click pastes directly
+    bool m_warnMultiLine = true;     // true = warn before pasting multiple lines
+    bool m_copyOnSelect = false;     // true = auto-copy on mouse release
 };
 
 } // namespace svy::terminal

@@ -7,6 +7,7 @@
 #include <QFontMetricsF>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
@@ -653,8 +654,13 @@ void TerminalView::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && m_selecting) {
         m_selecting = false;
         const QString text = selectedText();
-        if (!text.isEmpty() && QApplication::clipboard()->supportsSelection()) {
-            QApplication::clipboard()->setText(text, QClipboard::Selection);
+        if (!text.isEmpty()) {
+            if (QApplication::clipboard()->supportsSelection()) {
+                QApplication::clipboard()->setText(text, QClipboard::Selection);
+            }
+            if (m_copyOnSelect) {
+                QApplication::clipboard()->setText(text);
+            }
         }
         return;
     }
@@ -670,6 +676,46 @@ void TerminalView::wheelEvent(QWheelEvent* event) {
 }
 
 void TerminalView::contextMenuEvent(QContextMenuEvent* event) {
+    // Default: right-click pastes directly (MobaXterm style).
+    // If a URL-like word is under the cursor, offer Open/Copy Link instead.
+    if (m_rightClickPaste) {
+        // Check if there's a URL under the cursor position
+        const QPoint docPos = documentPositionAt(event->pos());
+        const Cell cell = cellAt(docPos.y(), docPos.x());
+        const bool looksLikeUrl = cell.text.startsWith("http") || cell.text.startsWith("ftp");
+        if (looksLikeUrl) {
+            // Build the full word around the cursor to get the URL
+            QString word;
+            int col = docPos.x();
+            while (col > 0) {
+                const QString ch = cellAt(docPos.y(), col - 1).text;
+                if (ch.isEmpty() || ch == " ") break;
+                --col;
+            }
+            while (col < m_columns) {
+                const QString ch = cellAt(docPos.y(), col).text;
+                if (ch.isEmpty() || ch == " ") break;
+                word += ch;
+                ++col;
+            }
+            if (word.startsWith("http") || word.startsWith("ftp")) {
+                QMenu menu(this);
+                QAction* openLink = menu.addAction("Open Link");
+                QAction* copyLink = menu.addAction("Copy Link");
+                QAction* chosen = menu.exec(event->globalPos());
+                if (chosen == openLink) {
+                    QApplication::clipboard()->setText(word);
+                } else if (chosen == copyLink) {
+                    QApplication::clipboard()->setText(word);
+                }
+                return;
+            }
+        }
+        pasteFromClipboard();
+        return;
+    }
+
+    // Context menu mode
     QMenu menu(this);
     QAction* copyAction = menu.addAction("Copy");
     QAction* pasteAction = menu.addAction("Paste");
@@ -726,6 +772,20 @@ void TerminalView::pasteFromClipboard() {
     const QString text = QApplication::clipboard()->text();
     if (text.isEmpty() || m_session == nullptr) {
         return;
+    }
+
+    // Warn before pasting multiple lines (protects against accidental execution)
+    if (m_warnMultiLine && text.contains('\n') && text.trimmed().contains('\n')) {
+        QMessageBox box(this);
+        box.setWindowTitle("Paste Multiple Lines?");
+        box.setText("The clipboard contains multiple lines.");
+        box.setInformativeText("Paste all lines into the terminal? No command will be executed automatically.");
+        box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Ok);
+        box.button(QMessageBox::Ok)->setText("Paste");
+        if (box.exec() != QMessageBox::Ok) {
+            return;
+        }
     }
 
     QByteArray payload = text.toUtf8();

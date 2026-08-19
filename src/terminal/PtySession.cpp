@@ -1,6 +1,7 @@
 #include "terminal/PtySession.h"
 
 #include <QCoreApplication>
+#include <QThread>
 
 #include <cerrno>
 #include <csignal>
@@ -173,14 +174,35 @@ void PtySession::teardown(int exitCode) {
     }
 
     if (m_child > 0) {
-        int status = 0;
-        if (waitpid(m_child, &status, WNOHANG) == m_child && WIFEXITED(status)) {
-            exitCode = WEXITSTATUS(status);
-        } else {
-            ::kill(m_child, SIGKILL);
-            waitpid(m_child, &status, 0);
-        }
+        const pid_t child = m_child;
         m_child = -1;
+
+        int status = 0;
+        if (waitpid(child, &status, WNOHANG) == child) {
+            // Already exited — read exit code and we're done.
+            if (WIFEXITED(status)) {
+                exitCode = WEXITSTATUS(status);
+            }
+            emit sessionEnded(exitCode);
+            return;
+        }
+
+        // Child still alive: send SIGKILL and reap it on a background thread
+        // so the UI thread is never blocked.
+        ::kill(child, SIGKILL);
+        const int capturedExitCode = exitCode;
+        QThread* reaper = QThread::create([child, capturedExitCode, this]() {
+            int st = 0;
+            waitpid(child, &st, 0);
+            const int code = WIFEXITED(st) ? WEXITSTATUS(st) : capturedExitCode;
+            QMetaObject::invokeMethod(this, [this, code]() {
+                emit sessionEnded(code);
+            }, Qt::QueuedConnection);
+        });
+        reaper->setObjectName("PtyReaper");
+        connect(reaper, &QThread::finished, reaper, &QObject::deleteLater);
+        reaper->start();
+        return;
     }
 
     emit sessionEnded(exitCode);
