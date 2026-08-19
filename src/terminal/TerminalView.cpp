@@ -7,6 +7,7 @@
 #include <QFontMetricsF>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QAbstractButton>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
